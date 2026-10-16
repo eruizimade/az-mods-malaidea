@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws the Mala Idea steampunk wallpaper for the XDJ-AZ screen (1280x800).
+"""Draws the Mala Idea wallpaper for the XDJ-AZ screen (1280x800): the logo in ASCII on black.
 
     python3 -m pip install pillow numpy
     python3 tools/make_wallpaper.py
@@ -243,55 +243,89 @@ def bubble_plate(lines, font, cw, lh):
     return plate
 
 
+LOGO = os.path.join(ROOT, "tools", "mala-idea-logo.png")
+
+
+def ascii_logo(cols, font, cw, lh, color=(255, 255, 255)):
+    """The real logo (tools/mala-idea-logo.png) traced into ASCII: the bubble's outline in
+    line characters that follow its direction, the "Mala Idea" letters filled by density.
+    Returns a transparent layer with the characters."""
+    src = Image.open(LOGO).convert("L")
+    a = np.asarray(src, np.float32) / 255
+    ys, xs = np.where(a > 0.5)
+    m = 12
+    a = a[ys.min() - m:ys.max() + m, xs.min() - m:xs.max() + m]
+    bubble = Image.fromarray((a > 0.5).astype(np.uint8) * 255)
+    # the bubble's silhouette: the white shape with the letters' holes filled
+    filled = bubble.copy()
+    ImageDraw.floodfill(filled, (0, 0), 128)                  # everything outside the bubble
+    filled = filled.point(lambda v: 0 if v == 128 else 255)
+    fill = np.asarray(filled, np.float32) / 255
+    inner = np.asarray(filled.filter(ImageFilter.MinFilter(9)), np.float32) / 255
+    text = (fill > 0.5) & (inner > 0.5) & (a < 0.5)          # dark ink inside the bubble
+    edge = (fill > 0.5) & ~(np.asarray(filled.filter(ImageFilter.MinFilter(3))) > 128)
+    # the outline's direction, from the gradient of the blurred silhouette
+    soft = np.asarray(filled.filter(ImageFilter.GaussianBlur(6)), np.float32)
+    gy, gx = np.gradient(soft)
+
+    h, w = a.shape
+    rows = int(round(cols * (h / w) * (cw / lh)))
+    sx, sy = w / cols, h / rows
+    ramp = " .:+#@"
+    out = []
+    for r in range(rows):
+        line = ""
+        for c in range(cols):
+            y0, y1 = int(r * sy), int((r + 1) * sy)
+            x0, x1 = int(c * sx), int((c + 1) * sx)
+            t = text[y0:y1, x0:x1].mean()
+            e = edge[y0:y1, x0:x1]
+            if t > 0.12:
+                line += ramp[min(len(ramp) - 1, int(t * (len(ramp) - 1) + 0.5))]
+            elif e.mean() > 0.05:
+                ey, ex = np.where(e)
+                ny = gy[y0:y1, x0:x1][ey, ex].mean()
+                nx = gx[y0:y1, x0:x1][ey, ex].mean()
+                ang = (math.degrees(math.atan2(ny, nx)) + 180) % 180  # the normal
+                if ang < 22.5 or ang >= 157.5:
+                    ch = "|"
+                elif ang < 67.5:
+                    ch = "/"
+                elif ang < 112.5:
+                    ch = "-" if ny < 0 else "_"   # the top edge and the bottom edge
+                else:
+                    ch = "\\"
+                line += ch
+            else:
+                line += " "
+        out.append(line.rstrip())
+
+    lw, lhh = cols * cw + 40, rows * lh + 40
+    layer = Image.new("RGBA", (lw, lhh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    for i, l in enumerate(out):
+        d.text((20, 20 + i * lh), l, font=font, fill=color + (255,))
+    res = layer
+    return res, out
+
+
 def make():
-    base = background()
-
-    # big gears in the corners, cut off by the screen edge
-    paste_shadowed(base, gear(460, 22, (176, 126, 56, 255), (122, 82, 34, 255), seed=0.2), (-170, -170))
-    paste_shadowed(base, gear(250, 14, (150, 84, 44, 255), (104, 56, 28, 255), seed=0.5), (205, 40))
-    paste_shadowed(base, gear(520, 26, (168, 118, 52, 255), (116, 78, 32, 255), seed=0.1), (W - 330, H - 330))
-    paste_shadowed(base, gear(230, 12, (158, 92, 48, 255), (110, 62, 30, 255), seed=0.9), (W - 430, H - 210))
-    paste_shadowed(base, gear(190, 12, (182, 134, 60, 255), (124, 86, 36, 255), seed=0.3), (W - 175, 30))
-    paste_shadowed(base, gear(150, 10, (150, 84, 44, 255), (104, 56, 28, 255), seed=0.0), (40, H - 210))
-
-    # pipes along the bottom and a gauge
-    pipe_h(base, H - 88, 0, W - 380, 34, joints=[180, 520, 760])
-    gauge(base, 640, 668, 48, 300)
-
-    # the logo
-    lines = logo_lines()
-    font = ImageFont.truetype(MONO, 23, index=1)  # Menlo Bold
-    cw = int(font.getlength("M"))
-    lh = 30
-    plate = bubble_plate(lines, font, cw, lh)
-    x = (W - plate.width) // 2
-    y = int(H * 0.44 - plate.height / 2)
-    paste_shadowed(base, plate, (x, y), blur=18, offset=(12, 16), alpha=200)
-
-    # an engraved caption under it
-    small = ImageFont.truetype(MONO, 15)
-    cap = "~ XDJ-AZ ~ MALA IDEA STEAM WORKS ~ EST. 2026 ~"
-    d = ImageDraw.Draw(base)
-    cx = (W - small.getlength(cap)) / 2
-    cy = y + plate.height + 18
-    d.text((cx + 1, cy + 1), cap, font=small, fill=(20, 12, 6))
-    d.text((cx, cy), cap, font=small, fill=(206, 160, 86))
-
+    """Black, with the logo traced into white ASCII in the middle. Nothing else."""
+    base = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+    font = ImageFont.truetype(MONO, 10, index=1)  # Menlo Bold
+    logo, _ = ascii_logo(196, font, int(round(font.getlength("M"))), 12)
+    base.alpha_composite(logo, ((W - logo.width) // 2, (H - logo.height) // 2))
     return base.convert("RGB")
 
 
 def make_icon():
-    """256x256 icon for the Mod Index: a gear and the bubble with an ASCII "MI"."""
+    """256x256 icon for the Mod Index: the ASCII logo on black."""
     n = 256
-    yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
-    bg = np.array([46, 30, 17], np.float32) * (1.1 - 0.5 * np.hypot(xx - n / 2, yy - n / 2)[..., None] / n)
-    icon = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
-    paste_shadowed(icon, gear(300, 18, (176, 126, 56, 255), (122, 82, 34, 255), seed=0.2), (20, 20))
-    font = ImageFont.truetype(MONO, 22, index=1)
-    plate = bubble_plate(ascii_word("MI"), font, int(font.getlength("M")), 28)
-    scale = 220 / plate.width
-    plate = plate.resize((220, int(plate.height * scale)), Image.LANCZOS)
-    paste_shadowed(icon, plate, (18, 40), blur=8, offset=(5, 7), alpha=200)
+    icon = Image.new("RGBA", (n, n), (0, 0, 0, 255))
+    font = ImageFont.truetype(MONO, 13, index=1)
+    logo, _ = ascii_logo(90, font, int(round(font.getlength("M"))), 16)
+    logo = logo.resize((244, int(logo.height * 244 / logo.width)), Image.LANCZOS)
+    icon.alpha_composite(logo, (6, (n - logo.height) // 2))
     return icon.convert("RGB")
 
 
@@ -314,5 +348,5 @@ if __name__ == "__main__":
     q = write_miw(img, os.path.join(ROOT, "mala-idea-wallpaper", "assets", "wallpaper.miw"))
     q.convert("RGB").save(os.path.join(ROOT, "images", "wallpaper-on-deck.png"), optimize=True)
     make_icon().save(os.path.join(ROOT, "mala-idea-wallpaper", "icon.png"))
-    print("\n".join(logo_lines()))
+    print("\n".join(ascii_logo(196, ImageFont.truetype(MONO, 10, index=1), 6, 12)[1]))
     print("wrote images/wallpaper.png and mala-idea-wallpaper/assets/wallpaper.miw")

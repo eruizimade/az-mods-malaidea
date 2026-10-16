@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  *
- * mala-idea-wallpaper: the Mala Idea steampunk wallpaper on the XDJ-AZ screen.
+ * mala-idea-wallpaper: the Mala Idea wallpaper on the XDJ-AZ screen.
  *
  * AZ-MODS lets a community mod paint only over EP147's screen, never under it, so the
  * wallpaper is an idle screen: when nothing has been touched for a while and no deck is
@@ -216,7 +216,7 @@ static void register_rows(void)
     static const az_row_v1 on = {
         .size = sizeof(az_row_v1), .key = "on", .label = "Mala Idea Wallpaper",
         .kind = AZ_ROW_TOGGLE, .flags = AZ_ROW_DEFAULT_ON,
-        .help = "When the deck sits idle and nothing plays, the Mala Idea steampunk wallpaper "
+        .help = "When the deck sits idle and nothing plays, the Mala Idea wallpaper "
                 "covers the screen. Touch it or turn the browse knob to get the deck back.",
         .available = have_picture, .on_change = on_toggle,
     };

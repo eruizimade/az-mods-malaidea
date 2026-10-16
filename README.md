@@ -12,15 +12,15 @@ firmware d'AZ-MODS (2.01, core 1.2.3 o més nou).
 
 | Mod | Què fa |
 |:--|:--|
-| [**Mala Idea Wallpaper**](mala-idea-wallpaper) | Pantalla de repòs steampunk amb el logo de Mala Idea en ASCII |
+| [**Mala Idea Wallpaper**](mala-idea-wallpaper) | Pantalla de repòs: el logo de Mala Idea en ASCII sobre negre |
 
 <p align="center"><img src="images/wallpaper.png" width="720" alt="El fons de Mala Idea"></p>
 
 ## Mala Idea Wallpaper
 
 Quan el deck queda quiet (cap toc a la pantalla, cap gir del browse, cap deck sonant), el
-fons steampunk tapa tota la pantalla: engranatges de llautó, canonades de coure, un
-manòmetre i la bombolla de Mala Idea amb les lletres en ASCII.
+logo de Mala Idea tapa tota la pantalla: la bombolla i les lletres resseguides en ASCII
+blanc sobre negre, a partir del logo original (`tools/mala-idea-logo.png`).
 
 En tocar la pantalla, girar el browse, carregar o posar en marxa un tema, el deck torna.
 El toc que treu el fons no arriba al deck, així que no prem res del que hi havia a sota.
@@ -61,7 +61,7 @@ make -C mala-idea-wallpaper test AZ_SDK=$PWD/../az-mods-sdk AZ_SDK_INCLUDE=$PWD/
 
 ## Canviar el fons
 
-`tools/make_wallpaper.py` dibuixa el fons i l'icona (Pillow + numpy):
+`tools/make_wallpaper.py` ressegueix `tools/mala-idea-logo.png` en ASCII i en fa el fons i l'icona (Pillow + numpy):
 
 ```sh
 python3 -m pip install pillow numpy
