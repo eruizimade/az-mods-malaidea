@@ -40,8 +40,7 @@ Al **Mod Menu** surt la fila *Mala Idea Wallpaper*: activar-lo o no, **Show afte
 Quan un deck carrega un tema (d'un USB o de rekordbox per **Pro DJ Link**), el mod pregunta a
 Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 6 millors. Cada fila porta
 el **fit** (la barra de cinc i el número, el mateix que a Sets), les teves **estrelles**, BPM,
-tonalitat, títol, artista, **gènere** i el perquè. L'ordre és
-tonalitat, títol, artista i el perquè. L'ordre és el del model que Backspins aprèn dels teus
+tonalitat, títol, artista, **gènere** i el perquè. L'ordre és el del model que Backspins aprèn dels teus
 sets (què poses després de què).
 
 <p align="center"><img src="images/deck-suggest-panel.png" width="720" alt="El panell: filtres a dalt, suggerències a sota"></p>
