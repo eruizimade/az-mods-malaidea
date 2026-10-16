@@ -40,6 +40,7 @@ Al **Mod Menu** surt la fila *Mala Idea Wallpaper*: activar-lo o no, **Show afte
 Quan un deck carrega un tema (d'un USB o de rekordbox per **Pro DJ Link**), el mod pregunta a
 Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 6 millors. Cada fila porta
 el **fit** (la barra de cinc i el número, el mateix que a Sets), les teves **estrelles**, BPM,
+tonalitat, títol, artista, **gènere** i el perquè. L'ordre és
 tonalitat, títol, artista i el perquè. L'ordre és el del model que Backspins aprèn dels teus
 sets (què poses després de què).
 
@@ -49,7 +50,7 @@ Els **filtres** es toquen al panell i la llista es torna a demanar a l'instant:
 
 - **KEY** strict / open / any · **BPM** ±3 / ±6 / ±10 % / any · **ENERGY** any / up / = / down
   (l'energia del comentari) · **STARS** any / 3+ / 4+ / 5.
-- **Els teus MyTags**: el botó del grup (TIMING, MOOD, TYPE, FAMILY) canvia de grup i les
+- **Els teus MyTags i el gènere**: el botó del grup (TIMING, MOOD, TYPE, FAMILY, GENRE) canvia de grup i les
   etiquetes del costat filtren (una per grup, es poden combinar grups). **CLEAR** les treu.
 - A dalt a la dreta, quants temes passen els filtres.
 

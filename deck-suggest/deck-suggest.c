@@ -46,7 +46,7 @@
 #define HEAD_H 40
 #define FILT_H 46
 #define PANEL_H (HEAD_H + 2 * FILT_H + ROWS * ROW_H + 12)
-#define GROUPS 4
+#define GROUPS 5
 #define GTAGS 10
 #define TAB_W 150
 #define TAB_H 44
@@ -57,7 +57,7 @@ static const az_core_v1 *C;
 
 typedef struct {
     int fit, stars;            /* fit 0..100 (as in Sets), stars 0..5 (your rekordbox rating) */
-    char bpm[8], key[6], title[64], artist[44], why[68];
+    char bpm[8], key[6], title[64], artist[44], genre[32], why[68];
 } row_t;
 
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -312,16 +312,16 @@ static void take_answer(int deck, char *body)
         } else if (!strncmp(line, "msg ", 4)) {
             snprintf(msg, sizeof msg, "%s", line + 4);
         } else if (!strncmp(line, "s\t", 2) && n < ROWS) {
-            /* s  fit  stars  bpm  key  title  artist  why */
-            char *f[7] = { 0 };
+            /* s  fit  stars  bpm  key  title  artist  genre  why */
+            char *f[8] = { 0 };
             char *p = line + 2;
-            for (int i = 0; i < 7 && p; i++) {
+            for (int i = 0; i < 8 && p; i++) {
                 f[i] = p;
                 p = strchr(p, '\t');
                 if (p)
                     *p++ = 0;
             }
-            if (!f[6])
+            if (!f[7])
                 continue;
             row_t *r = &got[n++];
             r->fit = atoi(f[0]);
@@ -330,7 +330,8 @@ static void take_answer(int deck, char *body)
             snprintf(r->key, sizeof r->key, "%s", f[3]);
             snprintf(r->title, sizeof r->title, "%s", f[4]);
             snprintf(r->artist, sizeof r->artist, "%s", f[5]);
-            snprintf(r->why, sizeof r->why, "%s", f[6]);
+            snprintf(r->genre, sizeof r->genre, "%s", f[6]);
+            snprintf(r->why, sizeof r->why, "%s", f[7]);
         }
     }
     pthread_mutex_lock(&mu);
@@ -705,7 +706,8 @@ static void paint(az_draw *d, az_rect a, void *user)
         text_in(d, a, a.x + 252, y + 4, r[i].key, 16, hi);
         snprintf(s, sizeof s, "%s - %s", r[i].title, r[i].artist);
         text_in(d, a, a.x + 304, y + 2, s, 17, text);
-        text_in(d, a, a.x + 304, y + 24, r[i].why, 12, dim);
+        snprintf(s, sizeof s, "%s  |  %s", r[i].genre, r[i].why);
+        text_in(d, a, a.x + 304, y + 24, s, 12, dim);
     }
 }
 
