@@ -38,13 +38,16 @@
 #endif
 
 #define MOD_ID "deck-suggest"
-#define ROWS 5
+#define ROWS 6
 #define MAX_HOSTS 6
 #define PLAYED_AFTER_S 45.0
-#define PANEL_W 760
-#define ROW_H 40
+#define PANEL_W 1040
+#define ROW_H 42
 #define HEAD_H 40
-#define PANEL_H (HEAD_H + ROWS * ROW_H + 10)
+#define FILT_H 46
+#define PANEL_H (HEAD_H + 2 * FILT_H + ROWS * ROW_H + 12)
+#define GROUPS 4
+#define GTAGS 10
 #define TAB_W 150
 #define TAB_H 44
 
@@ -53,6 +56,7 @@ static const az_core_v1 *C;
 /* ---- what the panel shows (guarded by mu) ---------------------------------------------- */
 
 typedef struct {
+    int fit, stars;            /* fit 0..100 (as in Sets), stars 0..5 (your rekordbox rating) */
     char bpm[8], key[6], title[64], artist[44], why[68];
 } row_t;
 
@@ -60,14 +64,20 @@ static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static int shown_deck = -1;          /* 0..3, the deck these suggestions are for */
 static char now_title[64];
 static row_t rows[ROWS];
-static int n_rows;
-static char note[96] = "Load a track";  /* a status line when there are no rows */
+static int n_rows, n_match = -1;    /* n_match: how many tracks pass the filters */
+static char note[96] = "Load a track";
+/* The MyTag groups Backspins offers to filter by (from /deck/filters). */
+static int n_groups;
+static char g_label[GROUPS][12];
+static char g_tag[GROUPS][GTAGS][24];
+static int g_ntags[GROUPS];  /* a status line when there are no rows */
 static char link_state[96] = "not connected yet";
 static atomic_int fresh;             /* the thread has a new answer for tick to show */
+static atomic_int regrouped;         /* new filter tags arrived: repaint if the panel is up */
 
 /* ---- jobs for the network thread (guarded by mu) --------------------------------------- */
 
-enum { JOB_SUGGEST = 1, JOB_PLAYED };
+enum { JOB_SUGGEST = 1, JOB_PLAYED, JOB_FILTERS };
 typedef struct {
     int kind, deck;
     unsigned id;
@@ -75,6 +85,7 @@ typedef struct {
     double bpm;
     unsigned other_id;
     char other_title[128];
+    char filt[320];            /* the deck's filters, as key=value lines (JOB_SUGGEST) */
 } job_t;
 
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
@@ -289,32 +300,37 @@ static void copy_field(char *dst, size_t cap, const char *src, const char *end)
 static void take_answer(int deck, char *body)
 {
     row_t got[ROWS];
-    int n = 0;
+    int n = 0, count = -1;
     char now[64] = "", msg[96] = "";
     char *save = NULL;
     for (char *line = strtok_r(body, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         if (!strncmp(line, "now\t", 4)) {
             char *e = strchr(line + 4, '\t');
             copy_field(now, sizeof now, line + 4, e ? e : line + strlen(line));
+        } else if (!strncmp(line, "count\t", 6)) {
+            count = atoi(line + 6);
         } else if (!strncmp(line, "msg ", 4)) {
             snprintf(msg, sizeof msg, "%s", line + 4);
         } else if (!strncmp(line, "s\t", 2) && n < ROWS) {
-            char *f[6] = { 0 };
+            /* s  fit  stars  bpm  key  title  artist  why */
+            char *f[7] = { 0 };
             char *p = line + 2;
-            for (int i = 0; i < 5 && p; i++) {
+            for (int i = 0; i < 7 && p; i++) {
                 f[i] = p;
                 p = strchr(p, '\t');
                 if (p)
                     *p++ = 0;
             }
-            if (!f[4])
+            if (!f[6])
                 continue;
             row_t *r = &got[n++];
-            snprintf(r->bpm, sizeof r->bpm, "%s", f[0]);
-            snprintf(r->key, sizeof r->key, "%s", f[1]);
-            snprintf(r->title, sizeof r->title, "%s", f[2]);
-            snprintf(r->artist, sizeof r->artist, "%s", f[3]);
-            snprintf(r->why, sizeof r->why, "%s", f[4]);
+            r->fit = atoi(f[0]);
+            r->stars = atoi(f[1]);
+            snprintf(r->bpm, sizeof r->bpm, "%s", f[2]);
+            snprintf(r->key, sizeof r->key, "%s", f[3]);
+            snprintf(r->title, sizeof r->title, "%s", f[4]);
+            snprintf(r->artist, sizeof r->artist, "%s", f[5]);
+            snprintf(r->why, sizeof r->why, "%s", f[6]);
         }
     }
     pthread_mutex_lock(&mu);
@@ -322,15 +338,57 @@ static void take_answer(int deck, char *body)
     snprintf(now_title, sizeof now_title, "%s", now);
     memcpy(rows, got, sizeof got);
     n_rows = n;
+    n_match = count;
     snprintf(note, sizeof note, "%s", n ? "" : (msg[0] ? msg : "nothing fits yet"));
     pthread_mutex_unlock(&mu);
     atomic_store(&fresh, 1);
+}
+
+/* "g\t<label>\t<bank>\t<tag>..." lines: the groups and tags the deck can filter by. */
+static void take_filters(char *body)
+{
+    int n = 0;
+    char lab[GROUPS][12], tag[GROUPS][GTAGS][24];
+    int nt[GROUPS];
+    char *save = NULL;
+    for (char *line = strtok_r(body, "\n", &save); line && n < GROUPS; line = strtok_r(NULL, "\n", &save)) {
+        if (strncmp(line, "g\t", 2))
+            continue;
+        char *f[2 + GTAGS + 1] = { 0 };
+        int k = 0;
+        char *p = line + 2;
+        while (p && k < 2 + GTAGS) {
+            f[k++] = p;
+            p = strchr(p, '\t');
+            if (p)
+                *p++ = 0;
+        }
+        if (k < 3)
+            continue;
+        snprintf(lab[n], sizeof lab[n], "%s", f[0]);
+        nt[n] = 0;
+        for (int i = 2; i < k; i++)
+            snprintf(tag[n][nt[n]++], sizeof tag[0][0], "%s", f[i]);
+        n++;
+    }
+    pthread_mutex_lock(&mu);
+    n_groups = n;
+    memcpy(g_label, lab, sizeof lab);
+    memcpy(g_tag, tag, sizeof tag);
+    memcpy(g_ntags, nt, sizeof nt);
+    pthread_mutex_unlock(&mu);
+    atomic_store(&regrouped, 1);
 }
 
 static void run_job(const job_t *j)
 {
     char body[1024] = "", resp[4096];
     char num[32];
+    if (j->kind == JOB_FILTERS) {
+        if (post("/deck/filters", "", resp, sizeof resp) == 0)
+            take_filters(resp);
+        return;
+    }
     snprintf(num, sizeof num, "%d", j->deck);
     put(body, sizeof body, "deck", num);
     if (j->id) {
@@ -349,6 +407,8 @@ static void run_job(const job_t *j)
         }
         if (j->other_title[0])
             put(body, sizeof body, "other_title", j->other_title);
+        if (strlen(body) + strlen(j->filt) < sizeof body)
+            strcat(body, j->filt);
     }
     int rc = post(j->kind == JOB_SUGGEST ? "/deck/suggest" : "/deck/played", body, resp, sizeof resp);
     char st[96];
@@ -390,23 +450,42 @@ static void *worker(void *arg)
         pthread_mutex_unlock(&mu);
         if (atomic_exchange(&reload_cfg, 0))
             read_cfg();
-        if (key[0])
+        if (key[0]) {
+            pthread_mutex_lock(&mu);
+            int need_groups = n_groups == 0;
+            pthread_mutex_unlock(&mu);
+            if (need_groups && j.kind == JOB_SUGGEST) {
+                job_t f = { .kind = JOB_FILTERS };
+                run_job(&f);
+            }
             run_job(&j);
+        }
         else
             set_link("no link file on the stick: write it from Backspins");
     }
     return NULL;
 }
 
-/* ---- the panel --------------------------------------------------------------------------- */
+/* ---- the panel ----------------------------------------------------------------------------- */
 
 static az_surface *panel;
+static az_rect panel_rect;
 static int row_on = -1, row_pos = -1, row_hold = -1;
 static const char *const POSITIONS[] = { "Top", "Middle", "Bottom" };
 static const char *const HOLDS[] = { "10 s", "20 s", "40 s", "Until tapped" };
 static const double HOLD_S[] = { 10, 20, 40, 0 };
 static int expanded, visible;
-static double expanded_at;
+static double touched_at;            /* the last time the panel opened or was touched */
+
+/* The filters (guarded by mu: the UI thread changes them, on_paint reads them). */
+static const char *const KEY_MODES[] = { "strict", "open", "any" };
+static const char *const BPM_MODES[] = { "3", "6", "10", "any" };
+static const char *const ENERGY_MODES[] = { "any", "up", "same", "down" };
+static const int STAR_MODES[] = { 0, 3, 4, 5 };
+static int f_key = 1, f_bpm = 1, f_energy, f_stars, f_group;
+static char f_tag[GROUPS][24];       /* the chosen tag per group, "" = none */
+static job_t last_job;               /* the last load, asked again when a filter changes */
+static int have_last;
 
 static double now_s(void)
 {
@@ -420,17 +499,53 @@ static int value(int row, int def)
     return row < 0 ? def : C->row_value(row);
 }
 
+/* key=value lines for /deck/suggest; mu must be held. */
+static void filters_body(char *out, size_t cap)
+{
+    char tags[200] = "";
+    for (int g = 0; g < n_groups; g++)
+        if (f_tag[g][0]) {
+            size_t l = strlen(tags);
+            snprintf(tags + l, sizeof tags - l, "%s%s:%s", l ? "|" : "", g_label[g], f_tag[g]);
+        }
+    snprintf(out, cap, "key=%s\nbpm=%s\nenergy=%s\nstars=%d\ntags=%s\n", KEY_MODES[f_key],
+             BPM_MODES[f_bpm], ENERGY_MODES[f_energy], STAR_MODES[f_stars], tags);
+}
+
+static void save_filters(void)
+{
+    if (!AZ_HAS(C, cfg_set))
+        return;
+    C->cfg_set(MOD_ID, "f_key", f_key);
+    C->cfg_set(MOD_ID, "f_bpm", f_bpm);
+    C->cfg_set(MOD_ID, "f_energy", f_energy);
+    C->cfg_set(MOD_ID, "f_stars", f_stars);
+}
+
+static void load_filters(void)
+{
+    if (!AZ_HAS(C, cfg_get))
+        return;
+    int k = C->cfg_get(MOD_ID, "f_key", 1), b = C->cfg_get(MOD_ID, "f_bpm", 1);
+    int e = C->cfg_get(MOD_ID, "f_energy", 0), st = C->cfg_get(MOD_ID, "f_stars", 0);
+    f_key = k >= 0 && k < 3 ? k : 1;
+    f_bpm = b >= 0 && b < 4 ? b : 1;
+    f_energy = e >= 0 && e < 4 ? e : 0;
+    f_stars = st >= 0 && st < 4 ? st : 0;
+}
+
 static void place(void)
 {
     if (!panel)
         return;
-    static const int Y[] = { 96, 300, 520 };
+    static const int Y[] = { 80, 210, 400 };
     int p = value(row_pos, 1);
     int y = Y[p >= 0 && p < 3 ? p : 1];
     if (expanded)
-        C->surface_place(panel, (az_rect){ (1280 - PANEL_W) / 2, y, PANEL_W, PANEL_H });
+        panel_rect = (az_rect){ (1280 - PANEL_W) / 2, y, PANEL_W, PANEL_H };
     else
-        C->surface_place(panel, (az_rect){ 1280 - TAB_W - 16, y, TAB_W, TAB_H });
+        panel_rect = (az_rect){ 1280 - TAB_W - 16, y, TAB_W, TAB_H };
+    C->surface_place(panel, panel_rect);
     C->surface_redraw(panel);
 }
 
@@ -445,8 +560,55 @@ static void set_visible(int on)
 static void expand(int on)
 {
     expanded = on;
-    expanded_at = now_s();
+    touched_at = now_s();
     place();
+}
+
+/* ---- layout: the same boxes for painting and for taps -------------------------------------- */
+
+enum { HIT_NONE = 0, HIT_HEAD, HIT_KEY, HIT_BPM, HIT_ENERGY, HIT_STARS, HIT_GROUP, HIT_CLEAR,
+       HIT_TAG /* + tag index */ = 100 };
+typedef struct { int x, y, w, h, what; char text[40]; int on; } box_t;
+
+/* The filter boxes, relative to the panel's top left; mu must be held. */
+static int layout(box_t *bx, int max)
+{
+    int n = 0, px = 16, pad = 14, gap = 8;
+    int y1 = HEAD_H + 6, y2 = HEAD_H + FILT_H + 6, h = FILT_H - 10;
+    int x = 12;
+    char t[40];
+    static const char *const EN[] = { "any", "up", "=", "down" };
+#define ADD(Y, WHAT, ON, ...)                                                           \
+    do {                                                                                \
+        if (n < max) {                                                                  \
+            snprintf(t, sizeof t, __VA_ARGS__);                                         \
+            int w = C->text_width(t, px) + 2 * pad;                                     \
+            if (x + w > PANEL_W - 12)                                                   \
+                break;                                                                  \
+            bx[n] = (box_t){ x, Y, w, h, WHAT, "", ON };                                \
+            snprintf(bx[n].text, sizeof bx[n].text, "%s", t);                           \
+            n++;                                                                        \
+            x += w + gap;                                                               \
+        }                                                                               \
+    } while (0)
+    ADD(y1, HIT_KEY, f_key != 2, "KEY %s", KEY_MODES[f_key]);
+    ADD(y1, HIT_BPM, f_bpm != 3, f_bpm == 3 ? "BPM any" : "BPM +-%s%%", BPM_MODES[f_bpm]);
+    ADD(y1, HIT_ENERGY, f_energy != 0, "ENERGY %s", EN[f_energy]);
+    ADD(y1, HIT_STARS, f_stars != 0, f_stars ? "STARS %d+" : "STARS any", STAR_MODES[f_stars]);
+    x = 12;
+    if (n_groups > 0) {
+        int g = f_group < n_groups ? f_group : 0;
+        ADD(y2, HIT_GROUP, f_tag[g][0] != 0, "%s >", g_label[g]);
+        for (int i = 0; i < g_ntags[g]; i++)
+            ADD(y2, HIT_TAG + i, !strcmp(f_tag[g], g_tag[g][i]), "%s", g_tag[g][i]);
+        int any = 0;
+        for (int k = 0; k < n_groups; k++)
+            any |= f_tag[k][0] != 0;
+        if (any)
+            ADD(y2, HIT_CLEAR, 0, "CLEAR");
+    }
+#undef ADD
+    return n;
 }
 
 /* draw_text, cut to fit inside a (with "~" when cut), and nothing at all below its bottom. */
@@ -471,16 +633,19 @@ static void paint(az_draw *d, az_rect a, void *user)
 {
     (void)user;
     uint32_t bg = C->color(AZ_COL_BG), text = C->color(AZ_COL_TEXT);
-    uint32_t dim = C->color(AZ_COL_TEXT_DIM), hi = C->color(AZ_COL_HI);
+    uint32_t dim = C->color(AZ_COL_TEXT_DIM), hi = C->color(AZ_COL_HI), hit = C->color(AZ_COL_HI_TEXT);
     row_t r[ROWS];
-    int n, deck;
+    box_t bx[24];
+    int n, nb, deck, match;
     char now[64], nt[96];
     pthread_mutex_lock(&mu);
     memcpy(r, rows, sizeof r);
     n = n_rows;
+    match = n_match;
     deck = shown_deck;
     snprintf(now, sizeof now, "%s", now_title);
     snprintf(nt, sizeof nt, "%s", note);
+    nb = expanded ? layout(bx, 24) : 0;
     pthread_mutex_unlock(&mu);
 
     C->fill_rect(d, a.x, a.y, a.w, a.h, bg);
@@ -491,36 +656,121 @@ static void paint(az_draw *d, az_rect a, void *user)
         text_in(d, a, a.x + 16, a.y + 10, t, 18, hi);
         return;
     }
-    char h[128];
+    char h[140];
     if (deck >= 0 && now[0])
         snprintf(h, sizeof h, "NEXT AFTER DECK %d: %s", deck + 1, now);
     else
         snprintf(h, sizeof h, "NEXT");
     C->fill_rect(d, a.x, a.y, a.w, HEAD_H, hi);
-    text_in(d, a, a.x + 14, a.y + 10, h, 17, C->color(AZ_COL_HI_TEXT));
+    text_in(d, a, a.x + 14, a.y + 10, h, 17, hit);
+    if (match >= 0) {
+        char m[24];
+        snprintf(m, sizeof m, "%d match", match);
+        int w = C->text_width(m, 15);
+        text_in(d, a, a.x + a.w - w - 16, a.y + 12, m, 15, hit);
+    }
+    for (int i = 0; i < nb; i++) {
+        box_t *b = &bx[i];
+        if (b->on)
+            C->fill_rect(d, a.x + b->x, a.y + b->y, b->w, b->h, hi);
+        else
+            C->draw_rect(d, a.x + b->x, a.y + b->y, b->w, b->h, 2, b->what == HIT_GROUP ? hi : dim);
+        text_in(d, a, a.x + b->x + 14, a.y + b->y + (b->h - 24) / 2, b->text, 16, b->on ? hit : text);
+    }
+    int y0 = a.y + HEAD_H + 2 * FILT_H + 6;
+    C->draw_line(d, a.x + 8, y0 - 3, a.x + a.w - 8, y0 - 3, 1, dim);
     if (!n) {
-        text_in(d, a, a.x + 14, a.y + HEAD_H + 16, nt, 17, dim);
+        text_in(d, a, a.x + 14, y0 + 12, nt, 17, dim);
         return;
     }
     for (int i = 0; i < n; i++) {
-        int y = a.y + HEAD_H + 6 + i * ROW_H;
-        char s[140];
-        text_in(d, a, a.x + 14, y + 2, r[i].bpm, 17, hi);
-        text_in(d, a, a.x + 84, y + 2, r[i].key, 17, hi);
+        int y = y0 + i * ROW_H;
+        /* fit: a bar of five, as in Sets */
+        int segs = (r[i].fit + 10) / 20;
+        for (int k = 0; k < 5; k++) {
+            int sx = a.x + 14 + k * 11;
+            if (k < segs)
+                C->fill_rect(d, sx, y + 8, 8, 16, hi);
+            else
+                C->draw_rect(d, sx, y + 8, 8, 16, 1, dim);
+        }
+        char s[160];
+        snprintf(s, sizeof s, "%d", r[i].fit);
+        text_in(d, a, a.x + 74, y + 4, s, 14, dim);
+        char st[6] = "-----";
+        for (int k = 0; k < r[i].stars && k < 5; k++)
+            st[k] = '*';
+        text_in(d, a, a.x + 112, y + 4, st, 16, r[i].stars ? text : dim);
+        text_in(d, a, a.x + 186, y + 4, r[i].bpm, 16, hi);
+        text_in(d, a, a.x + 252, y + 4, r[i].key, 16, hi);
         snprintf(s, sizeof s, "%s - %s", r[i].title, r[i].artist);
-        text_in(d, a, a.x + 140, y + 1, s, 17, text);
-        text_in(d, a, a.x + 140, y + 22, r[i].why, 12, dim);
+        text_in(d, a, a.x + 304, y + 2, s, 17, text);
+        text_in(d, a, a.x + 304, y + 24, r[i].why, 12, dim);
     }
+}
+
+/* Ask again for the last load, with the filters as they are now. UI thread. */
+static void ask_again(void)
+{
+    if (!have_last)
+        return;
+    job_t j = last_job;
+    pthread_mutex_lock(&mu);
+    filters_body(j.filt, sizeof j.filt);
+    snprintf(note, sizeof note, "asking Backspins...");
+    pthread_mutex_unlock(&mu);
+    push_job(&j);
 }
 
 static int surface_input(const az_event *ev, void *user)
 {
     (void)user;
-    if (ev->kind == AZ_EV_TAP) {
-        expand(!expanded);
+    if (ev->kind != AZ_EV_TAP)
+        return ev->kind == AZ_EV_DOWN || ev->kind == AZ_EV_UP || ev->kind == AZ_EV_LONG;
+    touched_at = now_s();
+    if (!expanded) {
+        expand(1);
         return 1;
     }
-    return ev->kind == AZ_EV_DOWN || ev->kind == AZ_EV_UP || ev->kind == AZ_EV_LONG;
+    int x = ev->x - panel_rect.x, y = ev->y - panel_rect.y;
+    if (y < HEAD_H) {
+        expand(0);
+        return 1;
+    }
+    box_t bx[24];
+    int changed = 0;
+    pthread_mutex_lock(&mu);
+    int nb = layout(bx, 24), g = f_group < n_groups ? f_group : 0;
+    for (int i = 0; i < nb; i++) {
+        box_t *b = &bx[i];
+        if (x < b->x || x >= b->x + b->w || y < b->y || y >= b->y + b->h)
+            continue;
+        switch (b->what) {
+        case HIT_KEY: f_key = (f_key + 1) % 3; break;
+        case HIT_BPM: f_bpm = (f_bpm + 1) % 4; break;
+        case HIT_ENERGY: f_energy = (f_energy + 1) % 4; break;
+        case HIT_STARS: f_stars = (f_stars + 1) % 4; break;
+        case HIT_GROUP: f_group = n_groups ? (g + 1) % n_groups : 0; break;
+        case HIT_CLEAR: memset(f_tag, 0, sizeof f_tag); break;
+        default:
+            if (b->what >= HIT_TAG && b->what - HIT_TAG < g_ntags[g]) {
+                const char *t = g_tag[g][b->what - HIT_TAG];
+                if (!strcmp(f_tag[g], t))
+                    f_tag[g][0] = 0;
+                else
+                    snprintf(f_tag[g], sizeof f_tag[g], "%s", t);
+            }
+        }
+        changed = b->what != HIT_GROUP;
+        break;
+    }
+    pthread_mutex_unlock(&mu);
+    if (changed) {
+        save_filters();
+        ask_again();
+    }
+    C->surface_redraw(panel);
+    return 1;
 }
 
 /* ---- what the decks are doing ------------------------------------------------------------ */
@@ -564,10 +814,16 @@ static void on_deck(int deck, int what, void *user)
             break;
         }
     }
+    pthread_mutex_lock(&mu);
+    filters_body(j.filt, sizeof j.filt);
+    pthread_mutex_unlock(&mu);
+    last_job = j;
+    have_last = 1;
     push_job(&j);
     pthread_mutex_lock(&mu);
     shown_deck = deck;
     n_rows = 0;
+    n_match = -1;
     snprintf(now_title, sizeof now_title, "%s", di.title);
     snprintf(note, sizeof note, "asking Backspins...");
     pthread_mutex_unlock(&mu);
@@ -712,6 +968,7 @@ static int init(const az_core_v1 *core)
         }
     }
     register_ui();
+    load_filters();
 
     static const az_surface_v1 desc = {
         .size = sizeof(az_surface_v1),
@@ -728,6 +985,8 @@ static int init(const az_core_v1 *core)
         return 2;
     if (C->thread_start(MOD_ID, "backspins", worker, NULL) != 0)
         return 3;
+    job_t f = { .kind = JOB_FILTERS };
+    push_job(&f);
     return 0;
 }
 
@@ -742,9 +1001,11 @@ static void tick(void)
     }
     if (visible && value(row_on, 1) != 1)
         set_visible(0);
+    if (atomic_exchange(&regrouped, 0) && visible)
+        C->surface_redraw(panel);
     int h = value(row_hold, 1);
     double hold = HOLD_S[h >= 0 && h < 4 ? h : 1];
-    if (expanded && hold > 0 && t - expanded_at > hold)
+    if (expanded && hold > 0 && t - touched_at > hold)
         expand(0);
     static double last;
     if (last == 0)

@@ -1,8 +1,9 @@
 # Deck Suggestions
 
 Load a track on the XDJ-AZ (from a USB stick or from rekordbox over Pro DJ Link) and a panel
-shows the five best tracks to play next, picked by Backspins (the rekordbox toolkit) on your
-computer: BPM, key, title, artist and why. Tracks that play for 45 seconds are reported back,
+shows the six best tracks to play next, picked by Backspins (the rekordbox toolkit) on your
+computer: the fit (as in Sets), your stars, BPM, key, title, artist and why. Filters on the
+panel (key, BPM range, energy, stars and your MyTag groups) ask again at once. Tracks that play for 45 seconds are reported back,
 so what you play on the deck teaches the suggestions.
 
 It needs Backspins with Deck link on (`decklink.py`, port 47866) on the same network, and

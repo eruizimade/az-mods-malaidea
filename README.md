@@ -38,11 +38,25 @@ Al **Mod Menu** surt la fila *Mala Idea Wallpaper*: activar-lo o no, **Show afte
 ## Deck Suggestions
 
 Quan un deck carrega un tema (d'un USB o de rekordbox per **Pro DJ Link**), el mod pregunta a
-Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 5 millors: BPM, tonalitat,
-títol, artista i el perquè (el model que Backspins aprèn dels teus sets, més tonalitat i
-tempo). Al cap d'uns segons el panell es plega en una pestanya **NEXT**; un toc l'obre i el
-torna a plegar. Quan un tema ha sonat 45 segons, el mod l'apunta a Backspins, i el que punxes
-al deck també ensenya les suggerències.
+Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 6 millors. Cada fila porta
+el **fit** (la barra de cinc i el número, el mateix que a Sets), les teves **estrelles**, BPM,
+tonalitat, títol, artista i el perquè. L'ordre és el del model que Backspins aprèn dels teus
+sets (què poses després de què).
+
+<p align="center"><img src="images/deck-suggest-panel.png" width="720" alt="El panell: filtres a dalt, suggerències a sota"></p>
+
+Els **filtres** es toquen al panell i la llista es torna a demanar a l'instant:
+
+- **KEY** strict / open / any · **BPM** ±3 / ±6 / ±10 % / any · **ENERGY** any / up / = / down
+  (l'energia del comentari) · **STARS** any / 3+ / 4+ / 5.
+- **Els teus MyTags**: el botó del grup (TIMING, MOOD, TYPE, FAMILY) canvia de grup i les
+  etiquetes del costat filtren (una per grup, es poden combinar grups). **CLEAR** les treu.
+- A dalt a la dreta, quants temes passen els filtres.
+
+Un toc a la capçalera plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre.
+Es plega sol quan fa estona que no el toques. Quan un tema ha sonat 45 segons, el mod
+l'apunta a Backspins, i el que punxes al deck també ensenya les suggerències. Res d'això
+escriu a rekordbox.
 
 Per fer-lo anar:
 
