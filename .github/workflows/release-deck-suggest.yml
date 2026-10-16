@@ -3,25 +3,25 @@
 # Copy this file to .github/workflows/release.yml in your mod's repository. Then a
 # release is one command:
 #
-#     git tag mala-idea-wallpaper-0.1.0 && git push origin mala-idea-wallpaper-0.1.0
+#     git tag deck-suggest-0.1.0 && git push origin deck-suggest-0.1.0
 #
 # The tag must be <id>-<version> or v<version>, and the version must match azmod.json.
 # The workflow builds the mod in the SDK container, validates it, packages it, attaches
 # the .azmod and its icon to a GitHub release for the tag, and prints the
 # azmods-repo.json entry. If UPDATE_INDEX is "true" and your repository has an
 # azmods-repo.json at its root, it also adds the entry and commits it.
-name: release
+name: release deck-suggest
 
 on:
   push:
     # this mod's tags only; one tag pattern per mod; copy the job for another mod
-    tags: ["mala-idea-wallpaper-*"]
+    tags: ["deck-suggest-*"]
 
 permissions:
   contents: write          # create the release and (optionally) commit the repository file
 
 env:
-  MOD_DIR: "mala-idea-wallpaper"           # where azmod.json and the Makefile are, relative to the repo root
+  MOD_DIR: "deck-suggest"           # where azmod.json and the Makefile are, relative to the repo root
   SDK_REPO: "Kyle-Hosman/az-mods-sdk"
   SDK_REF: "v1.2.3"        # the SDK version you built and tested with (`azmod-pack --version`)
   UPDATE_INDEX: "true"     # commit the new entry into ./azmods-repo.json if it exists

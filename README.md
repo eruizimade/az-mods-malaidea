@@ -13,6 +13,7 @@ firmware d'AZ-MODS (2.01, core 1.2.3 o més nou).
 | Mod | Què fa |
 |:--|:--|
 | [**Mala Idea Wallpaper**](mala-idea-wallpaper) | Pantalla de repòs: el logo de Mala Idea en ASCII sobre negre |
+| [**Deck Suggestions**](deck-suggest) | Carregues un tema i surten els 5 millors per posar després, triats per Backspins des de l'ordinador |
 
 <p align="center"><img src="images/wallpaper.png" width="720" alt="El fons de Mala Idea"></p>
 
@@ -34,10 +35,39 @@ Al **Mod Menu** surt la fila *Mala Idea Wallpaper*: activar-lo o no, **Show afte
 > interfície voldria hooks al dibuix del firmware (adreces que canvien a cada versió), així
 > que de moment és una pantalla de repòs.
 
-## Instal·lar-lo
+## Deck Suggestions
+
+Quan un deck carrega un tema (d'un USB o de rekordbox per **Pro DJ Link**), el mod pregunta a
+Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 5 millors: BPM, tonalitat,
+títol, artista i el perquè (el model que Backspins aprèn dels teus sets, més tonalitat i
+tempo). Al cap d'uns segons el panell es plega en una pestanya **NEXT**; un toc l'obre i el
+torna a plegar. Quan un tema ha sonat 45 segons, el mod l'apunta a Backspins, i el que punxes
+al deck també ensenya les suggerències.
+
+Per fer-lo anar:
+
+1. A Backspins (branca `deck-link` de moment): engega el **Deck link**:
+   `python3 decklink.py --on`. Obre un servidor a part al port **47866**, només per a
+   aquestes dues preguntes i amb una clau; el servidor de l'app continua només a 127.0.0.1.
+2. Connecta a l'ordinador l'USB del deck (el que té la carpeta `MODS`; amb Pro DJ Link
+   n'hi ha prou amb un de petit sense música) i escriu-hi l'enllaç:
+   `python3 decklink.py --write-stick /Volumes/<USB>`. Desa `BACKSPINS/deck-link.cfg`
+   (l'adreça de l'ordinador i la clau).
+3. Deck i ordinador a la mateixa xarxa (la de Pro DJ Link ja hi és). Si l'ordinador canvia
+   d'adreça, el mod la busca sol per la xarxa.
+
+Al **Mod Menu**: *Deck Suggestions* (on/off), **Panel position** (dalt, mig, baix),
+**Keep it open** (10/20/40 s o fins que el toquis), **Link status** (si arriba a Backspins
+i per què no) i **Read link file again**.
+
+> [!NOTE]
+> Encara no es pot carregar una suggerència des del panell: l'SDK no té cap crida per carregar
+> un tema. De moment el busques al navegador del deck.
+
+## Instal·lar-los
 
 Un cop publicat (vegeu *Publicar*), al deck: **Mod Menu > Community Mods > Repositories**,
-afegeix `eruizimade/az-mods-malaidea` i instal·la *Mala Idea Wallpaper*. També es pot fer
+afegeix `eruizimade/az-mods-malaidea` i instal·la el mod que vulguis. També es pot fer
 des de la pestanya *Community Mods* de l'app d'AZ-MODS.
 
 Per provar-lo sense publicar: compila'l i empaqueta'l (a sota) i segueix
@@ -51,12 +81,15 @@ Cal Docker (amb `linux/arm64`), Python 3 i el SDK al costat:
 git clone https://github.com/Kyle-Hosman/az-mods-sdk ../az-mods-sdk
 ../az-mods-sdk/tools/azmod-pack build mala-idea-wallpaper     # compila i valida
 ../az-mods-sdk/tools/azmod-pack package mala-idea-wallpaper   # dist/mala-idea-wallpaper-0.1.0.azmod
+../az-mods-sdk/tools/azmod-pack build deck-suggest
+../az-mods-sdk/tools/azmod-pack package deck-suggest
 ```
 
 Les proves de l'SDK (al Mac, amb clang, sense Docker):
 
 ```sh
 make -C mala-idea-wallpaper test AZ_SDK=$PWD/../az-mods-sdk AZ_SDK_INCLUDE=$PWD/../az-mods-sdk/include
+make -C deck-suggest test AZ_SDK=$PWD/../az-mods-sdk AZ_SDK_INCLUDE=$PWD/../az-mods-sdk/include
 ```
 
 ## Canviar el fons
@@ -79,9 +112,10 @@ Puja el repo a GitHub i fes un tag amb la versió de `azmod.json`:
 
 ```sh
 git tag mala-idea-wallpaper-0.1.0 && git push origin mala-idea-wallpaper-0.1.0
+git tag deck-suggest-0.1.0 && git push origin deck-suggest-0.1.0
 ```
 
-El workflow de `.github/workflows/release.yml` el compila al contenidor de l'SDK, el valida i
+Cada mod té el seu workflow a `.github/workflows/`, que el compila al contenidor de l'SDK, el valida i
 penja el `.azmod` i l'icona a la release. Per sortir al Mod Index, PR a
 [az-mods-index](https://github.com/Kyle-Hosman/az-mods-index).
 
