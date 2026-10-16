@@ -1,0 +1,16 @@
+{
+  "azmod": 1,
+  "id": "mala-idea-wallpaper",
+  "name": "Mala Idea Wallpaper",
+  "version": "0.1.0",
+  "author": "eruizimade",
+  "summary": "A steampunk idle screen with the Mala Idea logo in ASCII art: brass gears, copper pipes and a pressure gauge.",
+  "description": "When the deck sits untouched and no deck is playing, the Mala Idea steampunk wallpaper covers the screen: brass gears, copper pipes, a pressure gauge and the Mala Idea speech bubble drawn in ASCII art.\n\nTouch the screen, turn the browse knob, or load or play a track and the deck comes back. The touch that closes the wallpaper is kept from the deck, so it never presses what was under it. Set the wait (1 to 30 min) or show it now in the Mod Menu.\n\nIt only draws on the screen. It does not patch the deck's code, change any control, LED or audio, write files, or use the network.",
+  "category": "visual",
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/eruizimade/az-mods-malaidea/tree/main/mala-idea-wallpaper",
+  "api": 1,
+  "firmware": ["any"],
+  "hooks": false,
+  "min_core": "1.2.3"
+}
