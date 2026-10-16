@@ -4,7 +4,7 @@
   "name": "Deck Suggestions",
   "version": "0.1.0",
   "author": "eruizimade",
-  "summary": "Load a track and see the best tracks to play next, filtered by key, tempo, energy, stars and your MyTags, suggested by Backspins on your computer over your network.",
+  "summary": "What to play next, from Backspins on your computer: filter by key, tempo, energy, stars and MyTags.",
   "description": "When a deck loads a track, from a USB stick or from rekordbox over Pro DJ Link, a panel shows the six best follow-ups with fit, stars, BPM, key and why, picked by Backspins (the rekordbox toolkit) from your own sets. Tap filters (key, BPM, energy, stars, MyTags) to narrow them. Tracks that play for 45 seconds are sent back so they teach it.\n\nNeeds Backspins with Deck link on, on the same network. Uses the network only to reach it. Changes no control, audio or library.",
   "category": "tools",
   "license": "GPL-3.0-only",
