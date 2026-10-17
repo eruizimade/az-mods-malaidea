@@ -40,8 +40,8 @@
 #define WAVE_COLS 120
 #define WAVE_W (WAVE_COLS * 2)    /* two pixels a column */
 #define WAVE_H (ROW_H - 6)
-#define TAB_W 150
-#define TAB_H 44
+#define TAB_W 160
+#define TAB_H 40
 #define CLOSE_W 64
 
 static const az_core_v1 *C;
@@ -474,8 +474,12 @@ static void *worker(void *arg)
 
 static az_surface *panel;
 static az_rect panel_rect;
-static int row_on = -1, row_pos = -1, row_hold = -1;
+static int row_on = -1, row_pos = -1, row_hold = -1, row_tab = -1;
 static const char *const POSITIONS[] = { "Top", "Middle", "Bottom" };
+/* Where the folded BACKSPINS tab sits. ⚠ Not over the Beat FX panel on the right (where it
+ * first went): the free strip at the left, under WAVEFORM and above DECK 1, is the default. */
+static const char *const TAB_SPOTS[] = { "Under WAVEFORM", "Top centre", "Right" };
+static const int TAB_XY[3][2] = { { 10, 84 }, { (1280 - TAB_W) / 2, 84 }, { 1280 - TAB_W - 16, 300 } };
 static const char *const HOLDS[] = { "10 s", "20 s", "40 s", "Until tapped" };
 static const double HOLD_S[] = { 10, 20, 40, 0 };
 static int expanded, visible;
@@ -543,8 +547,11 @@ static void place(void)
     int y = Y[p >= 0 && p < 3 ? p : 1];
     if (expanded)
         panel_rect = (az_rect){ (1280 - PANEL_W) / 2, y, PANEL_W, PANEL_H };
-    else
-        panel_rect = (az_rect){ 1280 - TAB_W - 16, y, TAB_W, TAB_H };
+    else {
+        int t = value(row_tab, 0);
+        t = t >= 0 && t < 3 ? t : 0;
+        panel_rect = (az_rect){ TAB_XY[t][0], TAB_XY[t][1], TAB_W, TAB_H };
+    }
     C->surface_place(panel, panel_rect);
     C->surface_redraw(panel);
 }
@@ -711,13 +718,13 @@ static void paint(az_draw *d, az_rect a, void *user)
     C->draw_rect(d, a.x, a.y, a.w, a.h, 2, hi);
     if (!expanded) {
         char t[24];
-        snprintf(t, sizeof t, n ? "NEXT  %d" : "NEXT", n);
-        text_in(d, a, a.x + 16, a.y + 10, t, 18, hi);
+        snprintf(t, sizeof t, n ? "BACKSPINS %d" : "BACKSPINS", n);
+        text_in(d, a, a.x + 12, a.y + 8, t, 17, hi);
         return;
     }
     char h[160];
     C->fill_rect(d, a.x, a.y, a.w, HEAD_H, hi);
-    /* the close button: folds the panel into the NEXT tab */
+    /* the close button: folds the panel into the BACKSPINS tab */
     int cx = a.x + a.w - CLOSE_W;
     C->fill_rect(d, cx, a.y, CLOSE_W, HEAD_H, bg);
     C->draw_line(d, cx + 18, a.y + 10, cx + CLOSE_W - 18, a.y + HEAD_H - 10, 3, hi);
@@ -739,9 +746,9 @@ static void paint(az_draw *d, az_rect a, void *user)
         text_to(d, a, a.x + 14 + w, a.y + 12, h, 15, hit, right);
     } else {
         if (deck >= 0 && now[0])
-            snprintf(h, sizeof h, "NEXT AFTER DECK %d: %s", deck + 1, now);
+            snprintf(h, sizeof h, "BACKSPINS  after deck %d: %s", deck + 1, now);
         else
-            snprintf(h, sizeof h, "NEXT");
+            snprintf(h, sizeof h, "BACKSPINS");
         text_to(d, a, a.x + 14, a.y + 10, h, 17, hit, right);
     }
     for (int i = 0; i < nb; i++) {
@@ -829,7 +836,7 @@ static int surface_input(const az_event *ev, void *user)
     }
     int x = ev->x - panel_rect.x, y = ev->y - panel_rect.y;
     if (y < HEAD_H) {
-        /* the close button, or the header: fold into the NEXT tab */
+        /* the close button, or the header: fold into the BACKSPINS tab */
         expand(0);
         return 1;
     }
@@ -1034,10 +1041,15 @@ static void register_ui(void)
         .parent = "on", .help = "Where the suggestions panel sits on the deck screen.",
         .choices = POSITIONS, .n_choices = 3, .default_choice = 1, .on_change = on_pos,
     };
+    static const az_row_v1 tab = {
+        .size = sizeof(az_row_v1), .key = "tab", .label = "Tab position", .kind = AZ_ROW_CHOICE,
+        .parent = "on", .help = "Where the folded BACKSPINS tab sits on the deck screen.",
+        .choices = TAB_SPOTS, .n_choices = 3, .default_choice = 0, .on_change = on_pos,
+    };
     static const az_row_v1 hold = {
         .size = sizeof(az_row_v1), .key = "hold", .label = "Keep it open", .kind = AZ_ROW_CHOICE,
         .parent = "on", .help = "How long the panel stays open after a load before it folds "
-                                "into the small NEXT tab. Tap the tab to open it again.",
+                                "into the small BACKSPINS tab. Tap the tab to open it again.",
         .choices = HOLDS, .n_choices = 4, .default_choice = 1,
     };
     static const az_row_v1 status = {
@@ -1052,6 +1064,7 @@ static void register_ui(void)
     };
     row_on = C->register_row(MOD_ID, &on);
     row_pos = C->register_row(MOD_ID, &pos);
+    row_tab = C->register_row(MOD_ID, &tab);
     row_hold = C->register_row(MOD_ID, &hold);
     C->register_row(MOD_ID, &status);
     C->register_row(MOD_ID, &again);

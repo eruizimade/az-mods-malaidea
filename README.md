@@ -64,7 +64,8 @@ i al navegador de l'AZ hi ha el tema amb la seva forma d'ona: Touch Preview amb 
 (LINK CUE) i LOAD, com sempre. El panell no fa so: el so és sempre el del navegador de l'AZ.
 
 Un toc a una fila posa les seves lletres de **SEARCH** en gran a la capçalera. La **✕** (o un
-toc a la capçalera) plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre. Es
+toc a la capçalera) plega el panell en una pestanya **BACKSPINS** (per defecte a l'esquerra,
+sota WAVEFORM); un toc a la pestanya l'obre. Es
 plega sol quan fa estona que no el toques. La forma d'ona del panell és només per veure-la: el
 panell no fa so.
 
@@ -81,7 +82,8 @@ el seu disc no es toca.
 3. Instal·la el mod a l'SSD. Al **Mod Menu > Deck Suggestions > Status** es veu quants temes
    ha trobat.
 
-Al **Mod Menu**: *Deck Suggestions* (on/off), **Panel position** (dalt, mig, baix),
+Al **Mod Menu**: *Deck Suggestions* (on/off), **Panel position** (dalt, mig, baix), **Tab position**
+(sota WAVEFORM, a dalt al centre, a la dreta),
 **Keep it open** (10/20/40 s o fins que el toquis), **Status** i **Reload deck data**.
 
 El càlcul del deck és un port en C del de Backspins, i `deck-suggest/tests/parity.py` comprova
