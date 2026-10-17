@@ -807,7 +807,7 @@ static void on_deck(int deck, int what, void *user)
     shown_deck = deck;
     n_rows = 0;
     n_match = -1;
-    snprintf(now_title, sizeof now_title, "%s", di.title);
+    snprintf(now_title, sizeof now_title, "%.63s", di.title);
     snprintf(note, sizeof note, "working it out...");
     pthread_mutex_unlock(&mu);
     atomic_store(&fresh, 1);
