@@ -47,6 +47,8 @@ struct dd_lib {
     char g_label[MAX_GROUPS][16];
     int g_tag[MAX_GROUPS][MAX_GTAGS], g_n[MAX_GROUPS], ngroups;
     int *by_path;          /* row indices sorted by path */
+    char **loose;          /* per row: the path folded (dd_fold) */
+    int *by_loose;         /* row indices sorted by folded path */
 };
 
 /* ---- reading ----------------------------------------------------------------------------- */
@@ -58,6 +60,50 @@ static char *dup(const char *s)
     if (p)
         memcpy(p, s, n);
     return p;
+}
+
+/* U+00C0..U+00FF and U+0100..U+017F to their base letter ('?' = drop) */
+static const char FOLD_C0[] = "aaaaaaaceeeeiiiidnoooooxouuuuytsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+static const char FOLD_100[] = "aaaaaaccccccccddddeeeeeeeeeegggggggghhhhiiiiiiiiiiiijjkkkllllllllll"
+                               "nnnnnnnnnoooooooorrrrrrssssssssttttttuuuuuuuuuuuuwwyyyzzzzzzs";
+
+void dd_fold(const char *s, char *out, size_t n, int alnum_only)
+{
+    size_t k = 0;
+    const unsigned char *p = (const unsigned char *)(s ? s : "");
+    while (*p && k + 1 < n) {
+        unsigned cp;
+        int len;
+        if (*p < 0x80) {
+            cp = *p;
+            len = 1;
+        } else if ((*p & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+            cp = ((unsigned)(*p & 0x1F) << 6) | (p[1] & 0x3F);
+            len = 2;
+        } else {
+            /* three bytes or more: never a Latin letter; skip the whole sequence */
+            len = 1;
+            while ((p[len] & 0xC0) == 0x80)
+                len++;
+            p += len;
+            continue;
+        }
+        p += len;
+        char c = 0;
+        if (cp < 0x80)
+            c = (char)(cp >= 'A' && cp <= 'Z' ? cp - 'A' + 'a' : cp);
+        else if (cp >= 0xC0 && cp < 0x100)
+            c = FOLD_C0[cp - 0xC0];
+        else if (cp >= 0x100 && cp < 0x180)
+            c = FOLD_100[cp - 0x100];
+        /* U+0300..U+036F (combining accents) and the rest: dropped */
+        if (!c || c == '?')
+            continue;
+        if (alnum_only && !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+            continue;
+        out[k++] = c;
+    }
+    out[k] = 0;
 }
 
 /* Split line in place at tabs; returns the number of fields (at most max). */
@@ -116,6 +162,11 @@ static const dd_lib *sort_lib;
 static int by_path_cmp(const void *a, const void *b)
 {
     return strcmp(sort_lib->rows[*(const int *)a].path, sort_lib->rows[*(const int *)b].path);
+}
+
+static int by_loose_cmp(const void *a, const void *b)
+{
+    return strcmp(sort_lib->loose[*(const int *)a], sort_lib->loose[*(const int *)b]);
 }
 
 static int add_tag(dd_lib *L, int id, const char *bank, const char *name)
@@ -267,7 +318,10 @@ dd_lib *dd_load(const char *path, char *err, size_t errn)
     L->flow = malloc(sizeof(float) * (size_t)T * (size_t)T);
     L->party = malloc(sizeof(float) * (size_t)T * (size_t)T);
     L->by_path = malloc(sizeof(int) * (size_t)L->n);
-    if (!L->is_flow || !L->is_type || !L->is_mood || !L->flow || !L->party || !L->by_path) {
+    L->by_loose = malloc(sizeof(int) * (size_t)L->n);
+    L->loose = calloc((size_t)L->n, sizeof(char *));
+    if (!L->is_flow || !L->is_type || !L->is_mood || !L->flow || !L->party || !L->by_path ||
+        !L->by_loose || !L->loose) {
         snprintf(err, errn, "out of memory");
         free(line);
         fclose(fp);
@@ -302,10 +356,15 @@ dd_lib *dd_load(const char *path, char *err, size_t errn)
     }
     free(line);
     fclose(fp);
-    for (int i = 0; i < L->n; i++)
-        L->by_path[i] = i;
+    for (int i = 0; i < L->n; i++) {
+        char k[600];
+        dd_fold(L->rows[i].path, k, sizeof k, 0);
+        L->loose[i] = dup(k);
+        L->by_path[i] = L->by_loose[i] = i;
+    }
     sort_lib = L;
     qsort(L->by_path, (size_t)L->n, sizeof(int), by_path_cmp);
+    qsort(L->by_loose, (size_t)L->n, sizeof(int), by_loose_cmp);
     return L;
 }
 
@@ -340,6 +399,11 @@ void dd_free(dd_lib *L)
     free(L->flow);
     free(L->party);
     free(L->by_path);
+    if (L->loose)
+        for (int i = 0; i < L->n; i++)
+            free(L->loose[i]);
+    free(L->loose);
+    free(L->by_loose);
     free(L);
 }
 
@@ -356,7 +420,9 @@ const char *dd_tag_name(const dd_lib *L, int t)
 
 int dd_find_path(const dd_lib *L, const char *rel)
 {
-    int lo = 0, hi = L ? L->n - 1 : -1;
+    if (!L || !rel)
+        return -1;
+    int lo = 0, hi = L->n - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2, c = strcmp(L->rows[L->by_path[mid]].path, rel);
         if (!c)
@@ -366,47 +432,91 @@ int dd_find_path(const dd_lib *L, const char *rel)
         else
             hi = mid - 1;
     }
+    /* ⚠ the same name can reach us written two ways (macOS lists FAT32 names with the
+     * accent as a separate mark): compare folded */
+    char k[600];
+    dd_fold(rel, k, sizeof k, 0);
+    lo = 0;
+    hi = L->n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2, c = strcmp(L->loose[L->by_loose[mid]], k);
+        if (!c)
+            return L->by_loose[mid];
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
     return -1;
 }
 
-/* letters and digits only, lower case: "Sol de Nit!" -> "soldenit" (the data is ASCII already) */
-static void squash(const char *s, char *out, size_t n)
+int dd_find_path_suffix(const dd_lib *L, const char *path)
 {
-    size_t k = 0;
-    for (; s && *s && k + 1 < n; s++)
-        if (isalnum((unsigned char)*s))
-            out[k++] = (char)tolower((unsigned char)*s);
-    out[k] = 0;
+    if (!L || !path)
+        return -1;
+    /* every "/..." tail, longest first: whatever the mount point is called */
+    for (const char *p = path; p; p = strchr(p + 1, '/')) {
+        if (*p != '/')
+            continue;
+        int r = dd_find_path(L, p);
+        if (r >= 0)
+            return r;
+    }
+    return -1;
+}
+
+static const char *base_name(const char *path)
+{
+    const char *b = strrchr(path, '/');
+    return b ? b + 1 : path;
 }
 
 int dd_find_title(const dd_lib *L, const char *title, const char *artist)
 {
     if (!L || !title || !*title)
         return -1;
-    char t[200], a[200], rt[200], ra[200];
-    char tb[200], ab[200];
-    /* the deck's title can be the file name, "Title - Artist" */
+    char t[200], a[200], rt[200], ra[200], fn[300];
+    char tb[300], ab[300];
     snprintf(tb, sizeof tb, "%s", title);
     snprintf(ab, sizeof ab, "%s", artist ? artist : "");
+    /* the deck's title can be the file name, "Title - Artist" */
     char *dash = strstr(tb, " - ");
+    char whole[200];
+    dd_fold(tb, whole, sizeof whole, 1);
     if (dash && !ab[0]) {
         snprintf(ab, sizeof ab, "%s", dash + 3);
         *dash = 0;
     }
-    squash(tb, t, sizeof t);
-    squash(ab, a, sizeof a);
-    int best = -1;
+    dd_fold(tb, t, sizeof t, 1);
+    dd_fold(ab, a, sizeof a, 1);
+    if (!t[0])
+        return -1;
+    int best = -1, prefix = -1;
     for (int i = 0; i < L->n; i++) {
-        squash(L->rows[i].title, rt, sizeof rt);
-        if (strcmp(rt, t))
+        dd_fold(L->rows[i].title, rt, sizeof rt, 1);
+        if (!strcmp(rt, t) || !strcmp(rt, whole)) {
+            dd_fold(L->rows[i].artist, ra, sizeof ra, 1);
+            if (!a[0] || !strcmp(ra, a))
+                return i;
+            if (best < 0)
+                best = i;
             continue;
-        squash(L->rows[i].artist, ra, sizeof ra);
-        if (!a[0] || !strcmp(ra, a))
-            return i;
-        if (best < 0)
+        }
+        /* the file name without its extension */
+        snprintf(fn, sizeof fn, "%s", base_name(L->rows[i].path));
+        char *dot = strrchr(fn, '.');
+        if (dot)
+            *dot = 0;
+        char ff[300];
+        dd_fold(fn, ff, sizeof ff, 1);
+        if (!strcmp(ff, whole) && best < 0)
             best = i;
+        /* "Title" against "Title (Extended Mix)", either way round */
+        if (prefix < 0 && rt[0] && strlen(t) >= 4 &&
+            (!strncmp(rt, t, strlen(t)) || !strncmp(t, rt, strlen(rt))))
+            prefix = i;
     }
-    return best;
+    return best >= 0 ? best : prefix;
 }
 
 /* ---- the rules --------------------------------------------------------------------------- */

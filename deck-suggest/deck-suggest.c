@@ -68,6 +68,8 @@ static char g_tag[GROUPS][GTAGS][44];
 static int g_tagid[GROUPS][GTAGS];
 static int g_ntags[GROUPS];
 static char data_state[120] = "reading the deck data...";
+/* What the Status page shows to find out why a track does not match (guarded by mu). */
+static char diag[4][200];
 static atomic_int fresh;             /* the thread has a new answer for tick to show */
 static atomic_int regrouped;         /* new filter tags arrived: repaint if the panel is up */
 /* The finger, from the touch filter (bus thread) to tick and on_paint: the row being
@@ -118,9 +120,12 @@ static void push_job(const job_t *j)
 static char drive_root[300];         /* set in init(): where the drive is mounted */
 static char data_path[400];          /* <drive>/BACKSPINS/deck-data.tsv */
 static dd_lib *lib;
-typedef struct { unsigned id; int row; } idrow_t;
-static idrow_t *ids;                 /* the drive's content ids -> deck data rows, sorted by id */
-static int n_ids, cap_ids;
+/* Every track of the deck's drives (lib_tracks): its id on that drive, its title and artist
+ * as that drive's library has them, and the deck data row it is (-1 = none). Sorted by id. */
+typedef struct { unsigned id; int stick, row; char *title, *artist; } idrow_t;
+static idrow_t *ids;
+static int n_ids, cap_ids, n_mapped, per_stick[2];
+static char sample_path[200];
 static int session[256], n_session;  /* rows played this session, oldest first */
 static double last_play;
 
@@ -136,6 +141,18 @@ static void set_state(const char *fmt, ...)
     pthread_mutex_unlock(&mu);
 }
 
+static void set_diag(int line, const char *fmt, ...)
+{
+    char b[200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    pthread_mutex_lock(&mu);
+    snprintf(diag[line], sizeof diag[line], "%s", b);
+    pthread_mutex_unlock(&mu);
+}
+
 static double now_s(void)
 {
     struct timespec ts;
@@ -143,16 +160,20 @@ static double now_s(void)
     return (double)ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-/* lib_tracks: each track of the drive the deck data was written for, by path */
+static char *dupstr(const char *s)
+{
+    size_t n = strlen(s ? s : "") + 1;
+    char *p = malloc(n);
+    if (p)
+        memcpy(p, s ? s : "", n);
+    return p;
+}
+
+/* lib_tracks: every track of one of the deck's drives. ⚠ Matched by the END of its path,
+ * whatever the mount point is called, and without caring how accents are written. */
 static int collect(const az_track *t, void *user)
 {
-    (void)user;
-    size_t rl = strlen(drive_root);
-    if (!t->path || strncmp(t->path, drive_root, rl) || t->path[rl] != '/')
-        return 0;
-    int row = dd_find_path(lib, t->path + rl);
-    if (row < 0)
-        return 0;
+    int stick = *(int *)user;
     if (n_ids == cap_ids) {
         int nc = cap_ids ? cap_ids * 2 : 2048;
         idrow_t *b = realloc(ids, sizeof(idrow_t) * (size_t)nc);
@@ -161,8 +182,16 @@ static int collect(const az_track *t, void *user)
         ids = b;
         cap_ids = nc;
     }
-    ids[n_ids].id = t->id;
-    ids[n_ids++].row = row;
+    if (!sample_path[0] && t->path)
+        snprintf(sample_path, sizeof sample_path, "%s", t->path);
+    idrow_t *e = &ids[n_ids++];
+    e->id = t->id;
+    e->stick = stick;
+    e->row = dd_find_path_suffix(lib, t->path);
+    e->title = dupstr(t->title);
+    e->artist = dupstr(t->artist);
+    per_stick[stick]++;
+    n_mapped += e->row >= 0;
     return 0;
 }
 
@@ -172,11 +201,21 @@ static int id_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
+static void forget_ids(void)
+{
+    for (int i = 0; i < n_ids; i++) {
+        free(ids[i].title);
+        free(ids[i].artist);
+    }
+    n_ids = n_mapped = per_stick[0] = per_stick[1] = 0;
+    sample_path[0] = 0;
+}
+
 static void load_data(void)
 {
     dd_free(lib);
     lib = NULL;
-    n_ids = 0;
+    forget_ids();
     n_session = 0;
     char err[160] = "";
     if (data_path[0])
@@ -191,10 +230,11 @@ static void load_data(void)
         atomic_store(&regrouped, 1);
         return;
     }
-    /* which of the deck's ports holds that drive: the one whose tracks are under its root */
+    /* both ports: a track loaded from either is recognised (a b2b partner's drive too, when
+     * it holds the same files) */
     if (AZ_HAS(C, lib_tracks))
-        for (int stick = 0; stick < 2 && !n_ids; stick++)
-            C->lib_tracks(MOD_ID, stick, 0, collect, NULL);
+        for (int stick = 0; stick < 2; stick++)
+            C->lib_tracks(MOD_ID, stick, 0, collect, &stick);
     qsort(ids, (size_t)n_ids, sizeof(idrow_t), id_cmp);
     pthread_mutex_lock(&mu);
     n_groups = dd_groups(lib) < GROUPS ? dd_groups(lib) : GROUPS;
@@ -208,39 +248,60 @@ static void load_data(void)
     }
     pthread_mutex_unlock(&mu);
     atomic_store(&regrouped, 1);
-    set_state("%d tracks from Backspins, %d found in this drive's library", dd_count(lib), n_ids);
+    set_state("%d tracks in Backspins' deck data", dd_count(lib));
+    set_diag(0, "Drive: %s", drive_root[0] ? drive_root : "(not found)");
+    set_diag(1, "Deck library: USB1 %d tracks, USB2 %d; %d of them in the deck data", per_stick[0],
+             per_stick[1], n_mapped);
+    set_diag(2, "Path example: %s", sample_path[0] ? sample_path : "(none)");
 }
 
-/* letters and digits, lower case */
-static void squash(const char *s, char *out, size_t n)
+/* the folded title of a row starts the deck's title, or the other way round */
+static int title_like(const char *row_title, const char *title)
 {
-    size_t k = 0;
-    for (; s && *s && k + 1 < n; s++) {
-        char c = *s;
-        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z'))
-            out[k++] = c;
-        else if (c >= 'A' && c <= 'Z')
-            out[k++] = (char)(c - 'A' + 'a');
-    }
-    out[k] = 0;
+    char a[200], b[200];
+    dd_fold(row_title, a, sizeof a, 1);
+    dd_fold(title, b, sizeof b, 1);
+    if (!b[0])
+        return 1;
+    return !strncmp(b, a, strlen(a)) || !strncmp(a, b, strlen(b));
 }
 
-/* The deck data row of what a deck has loaded: by its id on our drive, if the title agrees
- * (⚠ a track from another drive, a b2b partner's, can carry the same number), else by title
- * and artist. -1 = not in the deck data. */
+/* The deck data row of what a deck has loaded, or -1:
+ *   1. by its id on the drive, if the title agrees (⚠ a b2b partner's drive numbers its
+ *      tracks too, and can use the same number);
+ *   2. by the title and artist the deck reports;
+ *   3. with no title from the deck, by the title the drive's own library has for that id. */
 static int row_for(unsigned id, const char *title, const char *artist)
 {
     if (!lib)
         return -1;
-    idrow_t k = { id, 0 }, *hit = id ? bsearch(&k, ids, (size_t)n_ids, sizeof k, id_cmp) : NULL;
-    if (hit) {
-        char a[200], b[200];
-        squash(dd_get(lib, hit->row)->title, a, sizeof a);
-        squash(title, b, sizeof b);
-        if (!b[0] || !strncmp(b, a, strlen(a)))
-            return hit->row;
+    const char *how = "not found";
+    int row = -1, lo = 0, hi = n_ids - 1, first = -1;
+    while (id && lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (ids[mid].id < id)
+            lo = mid + 1;
+        else {
+            if (ids[mid].id == id)
+                first = mid;
+            hi = mid - 1;
+        }
     }
-    return dd_find_title(lib, title, artist);
+    for (int i = first; i >= 0 && i < n_ids && ids[i].id == id && row < 0; i++)
+        if (ids[i].row >= 0 && title_like(dd_get(lib, ids[i].row)->title, title)) {
+            row = ids[i].row;
+            how = "by id";
+        }
+    if (row < 0 && (row = dd_find_title(lib, title, artist)) >= 0)
+        how = "by title";
+    /* only when the deck reports no title: with one, a different song under the same id is
+     * a b2b partner's track, not ours */
+    for (int i = first; row < 0 && !(title && title[0]) && i >= 0 && i < n_ids && ids[i].id == id; i++)
+        if ((row = dd_find_title(lib, ids[i].title, ids[i].artist)) >= 0)
+            how = "by the drive's title";
+    set_diag(3, "Last track: id %u \"%.60s\" / \"%.40s\": %s%s", id, title ? title : "",
+             artist ? artist : "", how, first < 0 && id ? " (id not in the deck library)" : "");
+    return row;
 }
 
 static void show_answer(int deck, int now, const dd_pick *p, int n, int pass)
@@ -865,9 +926,10 @@ static void reload(void *user)
 static void page_draw(az_draw *d, az_rect a, void *user)
 {
     (void)user;
-    char st[120], cp[400];
+    char st[120], cp[400], dg[4][200];
     pthread_mutex_lock(&mu);
     snprintf(st, sizeof st, "%s", data_state);
+    memcpy(dg, diag, sizeof dg);
     pthread_mutex_unlock(&mu);
     snprintf(cp, sizeof cp, "%s", data_path[0] ? data_path : "(the drive is not in the deck)");
     int lh = C->row_height(d);
@@ -876,7 +938,9 @@ static void page_draw(az_draw *d, az_rect a, void *user)
     text_in(d, a, a.x + 24, a.y + lh + 52, st, 20, C->color(AZ_COL_TEXT));
     text_in(d, a, a.x + 24, a.y + lh + 100, "File:", 20, C->color(AZ_COL_TEXT_DIM));
     text_in(d, a, a.x + 24, a.y + lh + 132, cp, 16, C->color(AZ_COL_TEXT));
-    text_in(d, a, a.x + 24, a.y + lh + 190,
+    for (int i = 0; i < 4; i++)
+        text_in(d, a, a.x + 24, a.y + lh + 176 + i * 30, dg[i], 15, C->color(AZ_COL_TEXT));
+    text_in(d, a, a.x + 24, a.y + lh + 310,
             "After each export from rekordbox, run Backspins' deck export to this drive.", 16,
             C->color(AZ_COL_TEXT_DIM));
 }

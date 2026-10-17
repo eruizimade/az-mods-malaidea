@@ -35,10 +35,17 @@ void dd_free(dd_lib *L);
 
 int dd_count(const dd_lib *L);
 const dd_row *dd_get(const dd_lib *L, int i);
-/* The row whose path is rel ("/Contents/..."), or -1. */
+/* The row whose path is rel ("/Contents/..."), or -1. Exact first, then without case,
+ * accents or how the accent is written (é and e + U+0301 alike). */
 int dd_find_path(const dd_lib *L, const char *rel);
-/* The row with this title (and artist, if given), compared without case or accents; -1. */
+/* The row whose path is the end of `path` (any mount point in front), or -1. */
+int dd_find_path_suffix(const dd_lib *L, const char *path);
+/* The row with this title (and artist, if given), compared without case or accents; also
+ * a title given as the file name ("Title - Artist"), or as the start of a longer title. -1. */
 int dd_find_title(const dd_lib *L, const char *title, const char *artist);
+/* s folded for comparing: ASCII lower case, accented Latin letters to their base letter,
+ * combining accents and other non-ASCII dropped; alnum_only also drops all but a-z 0-9. */
+void dd_fold(const char *s, char *out, size_t n, int alnum_only);
 
 /* The filter groups the panel offers (TIMING, MOOD, TYPE, FAMILY, GENRE). */
 int dd_groups(const dd_lib *L);
