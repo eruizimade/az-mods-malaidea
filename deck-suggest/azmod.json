@@ -2,7 +2,7 @@
   "azmod": 1,
   "id": "deck-suggest",
   "name": "Deck Suggestions",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": "eruizimade",
   "summary": "What to play next, worked out on the deck: fit, stars, key, tempo, energy and MyTag filters. No computer.",
   "description": "Load a track and a panel shows the six best follow-ups with fit, stars, BPM, key, genre, why, rekordbox's waveform and the letters to type in SEARCH, worked out on the deck from what Backspins (the rekordbox toolkit) wrote to your drive. Tap filters (key, BPM, energy, stars, MyTags, genre) to narrow them.\n\nNeeds BACKSPINS/deck-data.tsv on the drive (Backspins' deck export). Reads the drive only: no network, no writes, no change to controls, audio or library.",

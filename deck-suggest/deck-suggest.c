@@ -119,15 +119,23 @@ static void push_job(const job_t *j)
 
 static char drive_root[300];         /* set in init(): where the drive is mounted */
 static char data_path[400];          /* <drive>/BACKSPINS/deck-data.tsv */
-static dd_lib *lib;
-/* Every track of the deck's drives (lib_tracks): its id on that drive, its title and artist
- * as that drive's library has them, and the deck data row it is (-1 = none). Sorted by id. */
-typedef struct { unsigned id; int stick, row; char *title, *artist; } idrow_t;
-static idrow_t *ids;
-static int n_ids, cap_ids, n_mapped, per_stick[2];
-static char sample_path[200];
+static dd_lib *lib;                  /* the worker's; replaced by a reload, never freed (below) */
+static atomic_int lib_gen;           /* bumped by each load */
 static int session[256], n_session;  /* rows played this session, oldest first */
 static double last_play;
+
+/* Every track of the deck's drives (lib_tracks): its id on that drive, its title and artist
+ * as that drive's library has them, and the deck data row it is (-1 = none). Built by a
+ * thread of its own (mapper) and published under map_mu, sorted by id. ⚠ On its own thread
+ * because reading a drive's library can take its time, or not come back at all (an empty
+ * port): suggestions must never wait for it. Until it is ready, tracks are found by title. */
+typedef struct { unsigned id; int stick, row; char *title, *artist; } idrow_t;
+static pthread_mutex_t map_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t map_cv = PTHREAD_COND_INITIALIZER;
+static idrow_t *ids;
+static int n_ids, map_gen = -1;      /* map_gen: the lib_gen the published ids belong to */
+static dd_lib *map_want;             /* what the mapper should map next (map_mu) */
+static int map_want_gen = -1;
 
 static void set_state(const char *fmt, ...)
 {
@@ -169,53 +177,110 @@ static char *dupstr(const char *s)
     return p;
 }
 
-/* lib_tracks: every track of one of the deck's drives. ⚠ Matched by the END of its path,
- * whatever the mount point is called, and without caring how accents are written. */
-static int collect(const az_track *t, void *user)
-{
-    int stick = *(int *)user;
-    if (n_ids == cap_ids) {
-        int nc = cap_ids ? cap_ids * 2 : 2048;
-        idrow_t *b = realloc(ids, sizeof(idrow_t) * (size_t)nc);
-        if (!b)
-            return 1;
-        ids = b;
-        cap_ids = nc;
-    }
-    if (!sample_path[0] && t->path)
-        snprintf(sample_path, sizeof sample_path, "%s", t->path);
-    idrow_t *e = &ids[n_ids++];
-    e->id = t->id;
-    e->stick = stick;
-    e->row = dd_find_path_suffix(lib, t->path);
-    e->title = dupstr(t->title);
-    e->artist = dupstr(t->artist);
-    per_stick[stick]++;
-    n_mapped += e->row >= 0;
-    return 0;
-}
-
 static int id_cmp(const void *a, const void *b)
 {
     unsigned x = ((const idrow_t *)a)->id, y = ((const idrow_t *)b)->id;
     return x < y ? -1 : x > y;
 }
 
-static void forget_ids(void)
+/* ---- the mapper thread -------------------------------------------------------------------- */
+
+typedef struct {
+    const dd_lib *L;
+    int stick;
+    idrow_t *v;
+    int n, cap, mapped;
+    char sample[200];
+} collect_t;
+
+/* lib_tracks: every track of one drive. ⚠ Matched by the END of its path, whatever the
+ * mount point is called, and without caring how accents are written. */
+static int collect(const az_track *t, void *user)
 {
-    for (int i = 0; i < n_ids; i++) {
-        free(ids[i].title);
-        free(ids[i].artist);
+    collect_t *c = user;
+    if (c->n == c->cap) {
+        int nc = c->cap ? c->cap * 2 : 2048;
+        idrow_t *b = realloc(c->v, sizeof(idrow_t) * (size_t)nc);
+        if (!b)
+            return 1;
+        c->v = b;
+        c->cap = nc;
     }
-    n_ids = n_mapped = per_stick[0] = per_stick[1] = 0;
-    sample_path[0] = 0;
+    if (!c->sample[0] && t->path)
+        snprintf(c->sample, sizeof c->sample, "%s", t->path);
+    idrow_t *e = &c->v[c->n++];
+    e->id = t->id;
+    e->stick = c->stick;
+    e->row = dd_find_path_suffix(c->L, t->path);
+    e->title = dupstr(t->title);
+    e->artist = dupstr(t->artist);
+    c->mapped += e->row >= 0;
+    return 0;
 }
+
+/* Add one drive's tracks to the published map (if it still belongs to the current load). */
+static void publish(const collect_t *c, int gen)
+{
+    pthread_mutex_lock(&map_mu);
+    if (gen == atomic_load(&lib_gen)) {
+        if (map_gen != gen) {
+            free(ids); /* the strings of an older map are left: a reload is rare */
+            ids = NULL;
+            n_ids = 0;
+            map_gen = gen;
+        }
+        idrow_t *b = realloc(ids, sizeof(idrow_t) * (size_t)(n_ids + c->n + 1));
+        if (b) {
+            ids = b;
+            memcpy(ids + n_ids, c->v, sizeof(idrow_t) * (size_t)c->n);
+            n_ids += c->n;
+            qsort(ids, (size_t)n_ids, sizeof(idrow_t), id_cmp);
+        }
+    }
+    pthread_mutex_unlock(&map_mu);
+}
+
+static void *mapper(void *arg)
+{
+    (void)arg;
+    int done_gen = -1;
+    for (;;) {
+        pthread_mutex_lock(&map_mu);
+        while (map_want_gen == done_gen || !map_want)
+            pthread_cond_wait(&map_cv, &map_mu);
+        const dd_lib *L = map_want;
+        int gen = map_want_gen;
+        pthread_mutex_unlock(&map_mu);
+        done_gen = gen;
+        char line[2][100] = { "", "" };
+        char sample[200] = "";
+        /* USB 1 first and on its own: whatever USB 2 does, USB 1's ids are in use */
+        for (int stick = 0; stick < 2 && gen == atomic_load(&lib_gen); stick++) {
+            set_diag(1, "Deck library: reading USB%d...%s%s", stick + 1, line[0][0] ? " " : "", line[0]);
+            collect_t c = { L, stick, NULL, 0, 0, 0, "" };
+            double t0 = now_s();
+            int rc = C->lib_tracks(MOD_ID, stick, 0, collect, &c);
+            snprintf(line[stick], sizeof line[stick], "USB%d %d tracks, %d in the deck data (%.1f s%s)",
+                     stick + 1, c.n, c.mapped, now_s() - t0, rc < 0 ? ", none" : "");
+            if (!sample[0] && c.sample[0])
+                snprintf(sample, sizeof sample, "%s", c.sample);
+            publish(&c, gen);
+            free(c.v); /* the entries were copied; their strings now belong to the map */
+            set_diag(1, "Deck library: %s%s%s", line[0], line[1][0] ? "; " : "", line[1]);
+            set_diag(2, "Path example: %s", sample[0] ? sample : "(none)");
+        }
+    }
+    return NULL;
+}
+
+/* ---- the worker --------------------------------------------------------------------------- */
 
 static void load_data(void)
 {
-    dd_free(lib);
+    /* ⚠ The old deck data is not freed: the mapper may still be matching against it, and a
+     * reload is a rare, manual thing. */
     lib = NULL;
-    forget_ids();
+    atomic_fetch_add(&lib_gen, 1);
     n_session = 0;
     char err[160] = "";
     if (data_path[0])
@@ -230,12 +295,6 @@ static void load_data(void)
         atomic_store(&regrouped, 1);
         return;
     }
-    /* both ports: a track loaded from either is recognised (a b2b partner's drive too, when
-     * it holds the same files) */
-    if (AZ_HAS(C, lib_tracks))
-        for (int stick = 0; stick < 2; stick++)
-            C->lib_tracks(MOD_ID, stick, 0, collect, &stick);
-    qsort(ids, (size_t)n_ids, sizeof(idrow_t), id_cmp);
     pthread_mutex_lock(&mu);
     n_groups = dd_groups(lib) < GROUPS ? dd_groups(lib) : GROUPS;
     for (int g = 0; g < n_groups; g++) {
@@ -250,9 +309,16 @@ static void load_data(void)
     atomic_store(&regrouped, 1);
     set_state("%d tracks in Backspins' deck data", dd_count(lib));
     set_diag(0, "Drive: %s", drive_root[0] ? drive_root : "(not found)");
-    set_diag(1, "Deck library: USB1 %d tracks, USB2 %d; %d of them in the deck data", per_stick[0],
-             per_stick[1], n_mapped);
-    set_diag(2, "Path example: %s", sample_path[0] ? sample_path : "(none)");
+    /* the drive's library, on the mapper's own time */
+    if (AZ_HAS(C, lib_tracks)) {
+        pthread_mutex_lock(&map_mu);
+        map_want = lib;
+        map_want_gen = atomic_load(&lib_gen);
+        pthread_mutex_unlock(&map_mu);
+        pthread_cond_signal(&map_cv);
+    } else {
+        set_diag(1, "Deck library: this core cannot read it; tracks are found by title");
+    }
 }
 
 /* the folded title of a row starts the deck's title, or the other way round */
@@ -276,31 +342,43 @@ static int row_for(unsigned id, const char *title, const char *artist)
     if (!lib)
         return -1;
     const char *how = "not found";
-    int row = -1, lo = 0, hi = n_ids - 1, first = -1;
-    while (id && lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (ids[mid].id < id)
-            lo = mid + 1;
-        else {
-            if (ids[mid].id == id)
-                first = mid;
-            hi = mid - 1;
+    int row = -1, first = -1, ready;
+    char dtitle[200] = "", dartist[200] = "";
+    pthread_mutex_lock(&map_mu);
+    ready = map_gen == atomic_load(&lib_gen);
+    if (ready && id) {
+        int lo = 0, hi = n_ids - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            if (ids[mid].id < id)
+                lo = mid + 1;
+            else {
+                if (ids[mid].id == id)
+                    first = mid;
+                hi = mid - 1;
+            }
+        }
+        for (int i = first; i >= 0 && i < n_ids && ids[i].id == id && row < 0; i++) {
+            if (ids[i].row >= 0 && title_like(dd_get(lib, ids[i].row)->title, title)) {
+                row = ids[i].row;
+                how = "by id";
+            }
+            if (!dtitle[0]) {
+                snprintf(dtitle, sizeof dtitle, "%s", ids[i].title);
+                snprintf(dartist, sizeof dartist, "%s", ids[i].artist);
+            }
         }
     }
-    for (int i = first; i >= 0 && i < n_ids && ids[i].id == id && row < 0; i++)
-        if (ids[i].row >= 0 && title_like(dd_get(lib, ids[i].row)->title, title)) {
-            row = ids[i].row;
-            how = "by id";
-        }
+    pthread_mutex_unlock(&map_mu);
     if (row < 0 && (row = dd_find_title(lib, title, artist)) >= 0)
         how = "by title";
     /* only when the deck reports no title: with one, a different song under the same id is
      * a b2b partner's track, not ours */
-    for (int i = first; row < 0 && !(title && title[0]) && i >= 0 && i < n_ids && ids[i].id == id; i++)
-        if ((row = dd_find_title(lib, ids[i].title, ids[i].artist)) >= 0)
-            how = "by the drive's title";
+    if (row < 0 && !(title && title[0]) && dtitle[0] && (row = dd_find_title(lib, dtitle, dartist)) >= 0)
+        how = "by the drive's title";
     set_diag(3, "Last track: id %u \"%.60s\" / \"%.40s\": %s%s", id, title ? title : "",
-             artist ? artist : "", how, first < 0 && id ? " (id not in the deck library)" : "");
+             artist ? artist : "", how,
+             !ready ? " (drive library still being read)" : first < 0 && id ? " (id not in the deck library)" : "");
     return row;
 }
 
@@ -365,7 +443,7 @@ static void run_job(const job_t *j)
         shown_deck = j->deck;
         n_rows = 0;
         n_match = -1;
-        snprintf(note, sizeof note, "%s", lib ? "this track is not in Backspins' deck data" : data_state);
+        snprintf(note, sizeof note, "%s", lib ? "this track is not in Backspins' deck data (Status says why)" : data_state);
         pthread_mutex_unlock(&mu);
         atomic_store(&geo_rows, 0);
         atomic_store(&fresh, 1);
@@ -1036,6 +1114,8 @@ static int init(const az_core_v1 *core)
         C->touch_filter(MOD_ID, on_touch, NULL);
     if (C->thread_start(MOD_ID, "deck-suggest", worker, NULL) != 0)
         return 3;
+    if (AZ_HAS(C, lib_tracks) && C->thread_start(MOD_ID, "deck-library", mapper, NULL) != 0)
+        C->log(MOD_ID, "no thread for reading the drive's library; tracks are found by title");
     job_t l = { .kind = JOB_LOAD };
     push_job(&l);
     return 0;
