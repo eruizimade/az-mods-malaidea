@@ -42,6 +42,7 @@
 #define WAVE_H (ROW_H - 6)
 #define TAB_W 150
 #define TAB_H 44
+#define CLOSE_W 64
 
 static const az_core_v1 *C;
 
@@ -72,11 +73,8 @@ static char data_state[120] = "reading the deck data...";
 static char diag[4][200];
 static atomic_int fresh;             /* the thread has a new answer for tick to show */
 static atomic_int regrouped;         /* new filter tags arrived: repaint if the panel is up */
-/* The finger, from the touch filter (bus thread) to tick and on_paint: the row being
- * scrubbed (-1 = none) and where, in thousandths of the track. */
-static atomic_int scrub_row = -1, scrub_pos, scrub_moved;
-/* The panel as the touch filter needs it (written on the UI thread). */
-static atomic_int geo_x, geo_y, geo_open, geo_rows;
+/* The row tapped on the panel (-1 = none): its SEARCH letters go big in the header. */
+static int sel_row = -1;
 
 /* ---- jobs for our thread (guarded by mu) ------------------------------------------------- */
 
@@ -411,9 +409,9 @@ static void show_answer(int deck, int now, const dd_pick *p, int n, int pass)
     memcpy(rows, got, sizeof got);
     n_rows = n;
     n_match = pass;
+    sel_row = -1;
     snprintf(note, sizeof note, "%s", n ? "" : "nothing passes these filters");
     pthread_mutex_unlock(&mu);
-    atomic_store(&geo_rows, n);
     atomic_store(&fresh, 1);
 }
 
@@ -445,7 +443,6 @@ static void run_job(const job_t *j)
         n_match = -1;
         snprintf(note, sizeof note, "%s", lib ? "this track is not in Backspins' deck data (Status says why)" : data_state);
         pthread_mutex_unlock(&mu);
-        atomic_store(&geo_rows, 0);
         atomic_store(&fresh, 1);
         return;
     }
@@ -549,9 +546,6 @@ static void place(void)
     else
         panel_rect = (az_rect){ 1280 - TAB_W - 16, y, TAB_W, TAB_H };
     C->surface_place(panel, panel_rect);
-    atomic_store(&geo_x, panel_rect.x);
-    atomic_store(&geo_y, panel_rect.y);
-    atomic_store(&geo_open, expanded && visible);
     C->surface_redraw(panel);
 }
 
@@ -560,7 +554,6 @@ static void set_visible(int on)
     if (!panel || visible == on)
         return;
     visible = on;
-    atomic_store(&geo_open, expanded && visible);
     C->surface_show(panel, on);
 }
 
@@ -693,46 +686,6 @@ static void wave_paint(az_draw *d, int x, int y, const row_t *r, uint32_t bg, in
     C->draw_image(d, x, y, px, WAVE_W, WAVE_H);
 }
 
-/* Preview the track of a row from pos (thousandths). ⚠ Not yet: the deck's preview player
- * is not reachable through the SDK, and finding it in EP147 is the next step (a hook mod).
- * Until then the finger moves the playhead and nothing plays. */
-static void preview_at(int row, int pos)
-{
-    (void)row;
-    (void)pos;
-}
-
-/* Bus thread: a finger that comes down on a row's waveform is ours until it lifts. */
-static int on_touch(const az_touch *t, void *user)
-{
-    (void)user;
-    static int ours;
-    if (!t->down) {
-        if (ours) {
-            ours = 0;
-            atomic_store(&scrub_row, -1);
-            atomic_store(&scrub_moved, 1);
-            return AZ_TOUCH_TAKE;
-        }
-        return AZ_TOUCH_PASS;
-    }
-    int x = t->x - atomic_load(&geo_x), y = t->y - atomic_load(&geo_y);
-    int row = -1;
-    if (atomic_load(&geo_open) && x >= wave_x() && x < wave_x() + WAVE_W)
-        for (int i = 0; i < atomic_load(&geo_rows); i++)
-            if (y >= wave_y(i) && y < wave_y(i) + WAVE_H)
-                row = i;
-    if (!ours && row < 0)
-        return AZ_TOUCH_PASS;
-    if (!ours)
-        atomic_store(&scrub_row, row);
-    ours = 1;
-    int pos = (x - wave_x()) * 1000 / (WAVE_W - 1);
-    atomic_store(&scrub_pos, pos < 0 ? 0 : pos > 1000 ? 1000 : pos);
-    atomic_store(&scrub_moved, 1);
-    return AZ_TOUCH_TAKE;
-}
-
 static void paint(az_draw *d, az_rect a, void *user)
 {
     (void)user;
@@ -740,13 +693,14 @@ static void paint(az_draw *d, az_rect a, void *user)
     uint32_t dim = C->color(AZ_COL_TEXT_DIM), hi = C->color(AZ_COL_HI), hit = C->color(AZ_COL_HI_TEXT);
     row_t r[ROWS];
     box_t bx[24];
-    int n, nb, deck, match;
+    int n, nb, deck, match, sel;
     char now[64], nt[96];
     pthread_mutex_lock(&mu);
     memcpy(r, rows, sizeof r);
     n = n_rows;
     match = n_match;
     deck = shown_deck;
+    sel = sel_row < n_rows ? sel_row : -1;
     snprintf(now, sizeof now, "%s", now_title);
     snprintf(nt, sizeof nt, "%s", note);
     nb = expanded ? layout(bx, 24) : 0;
@@ -760,18 +714,34 @@ static void paint(az_draw *d, az_rect a, void *user)
         text_in(d, a, a.x + 16, a.y + 10, t, 18, hi);
         return;
     }
-    char h[140];
-    if (deck >= 0 && now[0])
-        snprintf(h, sizeof h, "NEXT AFTER DECK %d: %s", deck + 1, now);
-    else
-        snprintf(h, sizeof h, "NEXT");
+    char h[160];
     C->fill_rect(d, a.x, a.y, a.w, HEAD_H, hi);
-    text_in(d, a, a.x + 14, a.y + 10, h, 17, hit);
+    /* the close button: folds the panel into the NEXT tab */
+    int cx = a.x + a.w - CLOSE_W;
+    C->fill_rect(d, cx, a.y, CLOSE_W, HEAD_H, bg);
+    C->draw_line(d, cx + 18, a.y + 10, cx + CLOSE_W - 18, a.y + HEAD_H - 10, 3, hi);
+    C->draw_line(d, cx + 18, a.y + HEAD_H - 10, cx + CLOSE_W - 18, a.y + 10, 3, hi);
+    int right = cx - 12;
     if (match >= 0) {
         char m[24];
         snprintf(m, sizeof m, "%d match", match);
         int w = C->text_width(m, 15);
-        text_in(d, a, a.x + a.w - w - 16, a.y + 12, m, 15, hit);
+        text_in(d, a, right - w, a.y + 12, m, 15, hit);
+        right -= w + 16;
+    }
+    if (sel >= 0 && r[sel].search[0]) {
+        /* a row was tapped: what to type in the deck's SEARCH, big */
+        snprintf(h, sizeof h, "SEARCH  %s", r[sel].search);
+        text_to(d, a, a.x + 14, a.y + 6, h, 22, hit, right);
+        int w = C->text_width(h, 22) + 24;
+        snprintf(h, sizeof h, "%s - %s", r[sel].title, r[sel].artist);
+        text_to(d, a, a.x + 14 + w, a.y + 12, h, 15, hit, right);
+    } else {
+        if (deck >= 0 && now[0])
+            snprintf(h, sizeof h, "NEXT AFTER DECK %d: %s", deck + 1, now);
+        else
+            snprintf(h, sizeof h, "NEXT");
+        text_to(d, a, a.x + 14, a.y + 10, h, 17, hit, right);
     }
     for (int i = 0; i < nb; i++) {
         box_t *b = &bx[i];
@@ -820,16 +790,17 @@ static void paint(az_draw *d, az_rect a, void *user)
         snprintf(s, sizeof s, "%s  |  %s", r[i].genre, r[i].why);
         text_to(d, a, sx, y + 24, s, 12, dim, right);
         if (r[i].has_wave) {
-            int cur = atomic_load(&scrub_row) == i ? atomic_load(&scrub_pos) : -1;
-            wave_paint(d, a.x + wave_x(), a.y + wave_y(i), &r[i], bg, cur);
-            if (cur >= 0 && r[i].secs > 0) {
-                int at = r[i].secs * cur / 1000;
-                snprintf(s, sizeof s, "%d:%02d / %d:%02d", at / 60, at % 60, r[i].secs / 60, r[i].secs % 60);
-                int w = C->text_width(s, 13);
-                C->fill_rect(d, a.x + wave_x() + WAVE_W - w - 8, a.y + wave_y(i), w + 8, 18, bg);
-                text_in(d, a, a.x + wave_x() + WAVE_W - w - 4, a.y + wave_y(i) - 1, s, 13, text);
+            /* the shape only: the panel cannot play sound (preview in the deck's browser) */
+            wave_paint(d, a.x + wave_x(), a.y + wave_y(i), &r[i], bg, -1);
+            if (r[i].secs > 0) {
+                snprintf(s, sizeof s, "%d:%02d", r[i].secs / 60, r[i].secs % 60);
+                int w = C->text_width(s, 12);
+                C->fill_rect(d, a.x + wave_x() + WAVE_W - w - 6, a.y + wave_y(i), w + 6, 16, bg);
+                text_in(d, a, a.x + wave_x() + WAVE_W - w - 3, a.y + wave_y(i) - 1, s, 12, dim);
             }
         }
+        if (i == sel)
+            C->draw_rect(d, a.x + 6, y, a.w - 12, ROW_H, 2, hi);
     }
 }
 
@@ -857,9 +828,22 @@ static int surface_input(const az_event *ev, void *user)
     }
     int x = ev->x - panel_rect.x, y = ev->y - panel_rect.y;
     if (y < HEAD_H) {
+        /* the close button, or the header: fold into the NEXT tab */
         expand(0);
         return 1;
     }
+    int y0 = HEAD_H + 2 * FILT_H + 6;
+    if (y >= y0) {
+        /* a row: its SEARCH letters go big in the header (tap again to go back) */
+        int i = (y - y0) / ROW_H;
+        pthread_mutex_lock(&mu);
+        if (i < n_rows)
+            sel_row = sel_row == i ? -1 : i;
+        pthread_mutex_unlock(&mu);
+        C->surface_redraw(panel);
+        return 1;
+    }
+    (void)x;
     box_t bx[24];
     int changed = 0;
     pthread_mutex_lock(&mu);
@@ -1110,8 +1094,6 @@ static int init(const az_core_v1 *core)
     place();
     if (C->on_deck_event(MOD_ID, on_deck, NULL) != 0)
         return 2;
-    if (AZ_HAS(C, touch_filter))
-        C->touch_filter(MOD_ID, on_touch, NULL);
     if (C->thread_start(MOD_ID, "deck-suggest", worker, NULL) != 0)
         return 3;
     if (AZ_HAS(C, lib_tracks) && C->thread_start(MOD_ID, "deck-library", mapper, NULL) != 0)
@@ -1134,13 +1116,6 @@ static void tick(void)
         set_visible(0);
     if (atomic_exchange(&regrouped, 0) && visible)
         C->surface_redraw(panel);
-    if (atomic_exchange(&scrub_moved, 0) && visible) {
-        touched_at = t;
-        int row = atomic_load(&scrub_row);
-        if (row >= 0)
-            preview_at(row, atomic_load(&scrub_pos));
-        C->surface_redraw(panel);
-    }
     int h = value(row_hold, 1);
     double hold = HOLD_S[h >= 0 && h < 4 ? h : 1];
     if (expanded && hold > 0 && t - touched_at > hold)

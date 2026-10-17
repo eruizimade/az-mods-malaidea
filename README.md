@@ -63,8 +63,10 @@ i el que sona a l'altre deck tampoc.
 i al navegador de l'AZ hi ha el tema amb la seva forma d'ona: Touch Preview amb el dit
 (LINK CUE) i LOAD, com sempre. El panell no fa so: el so és sempre el del navegador de l'AZ.
 
-Un toc a la capçalera plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre.
-Es plega sol quan fa estona que no el toques.
+Un toc a una fila posa les seves lletres de **SEARCH** en gran a la capçalera. La **✕** (o un
+toc a la capçalera) plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre. Es
+plega sol quan fa estona que no el toques. La forma d'ona del panell és només per veure-la: el
+panell no fa so.
 
 **b2b:** engega el deck amb el teu SSD a **USB 1** (AZ-MODS carrega els mods d'aquí). Si el teu
 company carrega un tema del seu disc que no és a la teva biblioteca, el panell ho diu i prou;
