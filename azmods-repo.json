@@ -7,13 +7,13 @@
     {
       "id": "deck-suggest",
       "name": "Deck Suggestions",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "author": "eruizimade",
       "summary": "What to play next, worked out on the deck: fit, stars, key, tempo, energy and MyTag filters. No computer.",
-      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.3/deck-suggest-0.2.3-icon.png",
-      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.3/deck-suggest-0.2.3.azmod",
-      "sha256": "8d119899f2ab6651c9e02510ac3b769fbe9166087be6e9c6d3336574ec31ac08",
-      "size": 99129,
+      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.4/deck-suggest-0.2.4-icon.png",
+      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.4/deck-suggest-0.2.4.azmod",
+      "sha256": "0f971c7ae2e7b1c95c6139820967bf30bb5841c36ae963b804ccc563dc912fad",
+      "size": 103353,
       "firmware": [
         "any"
       ],
