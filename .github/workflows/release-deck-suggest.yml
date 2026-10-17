@@ -31,7 +31,7 @@ jobs:
     # GitHub's x86 runners build the arm64 container through QEMU, which is slower but makes
     # the same bytes. Public repositories can use the native arm64 runner instead:
     #   runs-on: ubuntu-24.04-arm   (and drop the QEMU step)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm   # native arm64: public repositories get it, much faster than QEMU
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,10 +56,6 @@ jobs:
           repository: ${{ env.SDK_REPO }}
           ref: ${{ env.SDK_REF }}
           path: .azmod-sdk
-
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Build the SDK container
         run: python3 .azmod-sdk/tools/azmod-pack image

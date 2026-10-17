@@ -611,8 +611,9 @@ static int layout(box_t *bx, int max)
     return n;
 }
 
-/* draw_text, cut to fit inside a (with "~" when cut), and nothing at all below its bottom. */
-static void text_to(az_draw *d, az_rect a, int x, int y, const char *s, int px, uint32_t rgb,
+/* draw_text, cut to fit inside a (with "~" when cut), and nothing at all below its bottom.
+ * noinline: inlined, gcc 7 reasons "y + c < y is false" from each caller and warns. */
+__attribute__((noinline)) static void text_to(az_draw *d, az_rect a, int x, int y, const char *s, int px, uint32_t rgb,
                     int right)
 {
     if (y < a.y || y + px * 3 / 2 > a.y + a.h || x >= right)
