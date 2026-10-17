@@ -53,6 +53,15 @@ Els **filtres** es toquen al panell i la llista es torna a demanar a l'instant:
   etiquetes del costat filtren (una per grup, es poden combinar grups). **CLEAR** les treu.
 - A dalt a la dreta, quants temes passen els filtres.
 
+A la dreta de cada fila hi ha la **forma d'ona** de tres bandes de rekordbox (la mateixa
+que veus als decks). Hi pots arrossegar el dit: la línia vermella i el temps segueixen el
+dit.
+
+> [!IMPORTANT]
+> Encara no sona. Per sentir el tema mentre arrossegues, el mod ha de fer servir el
+> reproductor de preescolta del mateix deck, que l'SDK no ofereix: s'ha de trobar dins el
+> firmware (un mod amb hooks, només per al firmware 2.00). És el pas següent.
+
 Un toc a la capçalera plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre.
 Es plega sol quan fa estona que no el toques. Quan un tema ha sonat 45 segons, el mod
 l'apunta a Backspins, i el que punxes al deck també ensenya les suggerències. Res d'això

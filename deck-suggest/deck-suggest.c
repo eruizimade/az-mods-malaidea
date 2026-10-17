@@ -48,6 +48,9 @@
 #define PANEL_H (HEAD_H + 2 * FILT_H + ROWS * ROW_H + 12)
 #define GROUPS 5
 #define GTAGS 10
+#define WAVE_COLS 120
+#define WAVE_W (WAVE_COLS * 2)    /* two pixels a column */
+#define WAVE_H (ROW_H - 6)
 #define TAB_W 150
 #define TAB_H 44
 
@@ -58,6 +61,8 @@ static const az_core_v1 *C;
 typedef struct {
     int fit, stars;            /* fit 0..100 (as in Sets), stars 0..5 (your rekordbox rating) */
     char bpm[8], key[6], title[64], artist[44], genre[32], why[68];
+    int secs, has_wave;
+    unsigned char wave[WAVE_COLS][3];   /* low, mid, high: 0..15 (rekordbox's 3-band overview) */
 } row_t;
 
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -74,6 +79,11 @@ static int g_ntags[GROUPS];  /* a status line when there are no rows */
 static char link_state[96] = "not connected yet";
 static atomic_int fresh;             /* the thread has a new answer for tick to show */
 static atomic_int regrouped;         /* new filter tags arrived: repaint if the panel is up */
+/* The finger, from the touch filter (bus thread) to tick and on_paint: the row being
+ * scrubbed (-1 = none) and where, in thousandths of the track. */
+static atomic_int scrub_row = -1, scrub_pos, scrub_moved;
+/* The panel as the touch filter needs it (written on the UI thread). */
+static atomic_int geo_x, geo_y, geo_open, geo_rows;
 
 /* ---- jobs for the network thread (guarded by mu) --------------------------------------- */
 
@@ -307,6 +317,18 @@ static void take_answer(int deck, char *body)
         if (!strncmp(line, "now\t", 4)) {
             char *e = strchr(line + 4, '\t');
             copy_field(now, sizeof now, line + 4, e ? e : line + strlen(line));
+        } else if (!strncmp(line, "w\t", 2) && n > 0) {
+            /* w  seconds  cols: the waveform of the row just read */
+            row_t *r = &got[n - 1];
+            char *cols = strchr(line + 2, '\t');
+            r->secs = atoi(line + 2);
+            if (cols && strlen(cols + 1) >= WAVE_COLS * 3) {
+                for (int c = 0; c < WAVE_COLS * 3; c++) {
+                    char h = cols[1 + c];
+                    r->wave[c / 3][c % 3] = (unsigned char)(h >= 'a' ? h - 'a' + 10 : h - '0') & 15;
+                }
+                r->has_wave = 1;
+            }
         } else if (!strncmp(line, "count\t", 6)) {
             count = atoi(line + 6);
         } else if (!strncmp(line, "msg ", 4)) {
@@ -324,6 +346,7 @@ static void take_answer(int deck, char *body)
             if (!f[7])
                 continue;
             row_t *r = &got[n++];
+            memset(r, 0, sizeof *r);
             r->fit = atoi(f[0]);
             r->stars = atoi(f[1]);
             snprintf(r->bpm, sizeof r->bpm, "%s", f[2]);
@@ -340,6 +363,7 @@ static void take_answer(int deck, char *body)
     memcpy(rows, got, sizeof got);
     n_rows = n;
     n_match = count;
+    atomic_store(&geo_rows, n);
     snprintf(note, sizeof note, "%s", n ? "" : (msg[0] ? msg : "nothing fits yet"));
     pthread_mutex_unlock(&mu);
     atomic_store(&fresh, 1);
@@ -547,6 +571,9 @@ static void place(void)
     else
         panel_rect = (az_rect){ 1280 - TAB_W - 16, y, TAB_W, TAB_H };
     C->surface_place(panel, panel_rect);
+    atomic_store(&geo_x, panel_rect.x);
+    atomic_store(&geo_y, panel_rect.y);
+    atomic_store(&geo_open, expanded && visible);
     C->surface_redraw(panel);
 }
 
@@ -555,6 +582,7 @@ static void set_visible(int on)
     if (!panel || visible == on)
         return;
     visible = on;
+    atomic_store(&geo_open, expanded && visible);
     C->surface_show(panel, on);
 }
 
@@ -613,9 +641,9 @@ static int layout(box_t *bx, int max)
 }
 
 /* draw_text, cut to fit inside a (with "~" when cut), and nothing at all below its bottom. */
-static void text_in(az_draw *d, az_rect a, int x, int y, const char *s, int px, uint32_t rgb)
+static void text_to(az_draw *d, az_rect a, int x, int y, const char *s, int px, uint32_t rgb,
+                    int right)
 {
-    int right = a.x + a.w - 8;
     if (y < a.y || y + px * 3 / 2 > a.y + a.h || x >= right)
         return;
     char buf[160];
@@ -628,6 +656,103 @@ static void text_in(az_draw *d, az_rect a, int x, int y, const char *s, int px, 
     }
     if (n)
         C->draw_text(d, x, y, buf, px, rgb);
+}
+
+static void text_in(az_draw *d, az_rect a, int x, int y, const char *s, int px, uint32_t rgb)
+{
+    text_to(d, a, x, y, s, px, rgb, a.x + a.w - 8);
+}
+
+/* ---- the waveform on each row, and the finger on it ----------------------------------------- */
+
+/* Where the waveform of a row sits, relative to the panel's top left. */
+static int wave_x(void) { return PANEL_W - 14 - WAVE_W; }
+static int wave_y(int row) { return HEAD_H + 2 * FILT_H + 6 + row * ROW_H + 3; }
+
+
+static void wave_paint(az_draw *d, int x, int y, const row_t *r, uint32_t bg, int cursor)
+{
+    static unsigned char px[WAVE_W * WAVE_H * 4];   /* on_paint is one thread: one buffer */
+    static const unsigned char COL[3][3] = { { 32, 96, 255 }, { 255, 160, 32 }, { 255, 255, 255 } };
+    for (int i = 0; i < WAVE_W * WAVE_H; i++) {
+        px[i * 4 + 0] = (unsigned char)(bg >> 16);
+        px[i * 4 + 1] = (unsigned char)(bg >> 8);
+        px[i * 4 + 2] = (unsigned char)bg;
+        px[i * 4 + 3] = 255;
+    }
+    for (int c = 0; c < WAVE_COLS; c++) {
+        /* the tallest band first, so the smaller ones stay visible in front of it */
+        int order[3] = { 0, 1, 2 };
+        for (int i = 0; i < 2; i++)
+            for (int k = i + 1; k < 3; k++)
+                if (r->wave[c][order[k]] > r->wave[c][order[i]]) {
+                    int t = order[i];
+                    order[i] = order[k];
+                    order[k] = t;
+                }
+        for (int o = 0; o < 3; o++) {
+            int b = order[o], h = r->wave[c][b] * WAVE_H / 15;
+            for (int yy = WAVE_H - h; yy < WAVE_H; yy++)
+                for (int xx = c * 2; xx < c * 2 + 2; xx++) {
+                    unsigned char *q = px + (yy * WAVE_W + xx) * 4;
+                    q[0] = COL[b][0];
+                    q[1] = COL[b][1];
+                    q[2] = COL[b][2];
+                }
+        }
+    }
+    if (cursor >= 0) {
+        int cx = cursor * (WAVE_W - 1) / 1000;
+        for (int yy = 0; yy < WAVE_H; yy++)
+            for (int xx = cx - 1; xx <= cx + 1; xx++)
+                if (xx >= 0 && xx < WAVE_W) {
+                    unsigned char *q = px + (yy * WAVE_W + xx) * 4;
+                    q[0] = 255;
+                    q[1] = 40;
+                    q[2] = 40;
+                }
+    }
+    C->draw_image(d, x, y, px, WAVE_W, WAVE_H);
+}
+
+/* Preview the track of a row from pos (thousandths). ⚠ Not yet: the deck's preview player
+ * is not reachable through the SDK, and finding it in EP147 is the next step (a hook mod).
+ * Until then the finger moves the playhead and nothing plays. */
+static void preview_at(int row, int pos)
+{
+    (void)row;
+    (void)pos;
+}
+
+/* Bus thread: a finger that comes down on a row's waveform is ours until it lifts. */
+static int on_touch(const az_touch *t, void *user)
+{
+    (void)user;
+    static int ours;
+    if (!t->down) {
+        if (ours) {
+            ours = 0;
+            atomic_store(&scrub_row, -1);
+            atomic_store(&scrub_moved, 1);
+            return AZ_TOUCH_TAKE;
+        }
+        return AZ_TOUCH_PASS;
+    }
+    int x = t->x - atomic_load(&geo_x), y = t->y - atomic_load(&geo_y);
+    int row = -1;
+    if (atomic_load(&geo_open) && x >= wave_x() && x < wave_x() + WAVE_W)
+        for (int i = 0; i < atomic_load(&geo_rows); i++)
+            if (y >= wave_y(i) && y < wave_y(i) + WAVE_H)
+                row = i;
+    if (!ours && row < 0)
+        return AZ_TOUCH_PASS;
+    if (!ours)
+        atomic_store(&scrub_row, row);
+    ours = 1;
+    int pos = (x - wave_x()) * 1000 / (WAVE_W - 1);
+    atomic_store(&scrub_pos, pos < 0 ? 0 : pos > 1000 ? 1000 : pos);
+    atomic_store(&scrub_moved, 1);
+    return AZ_TOUCH_TAKE;
 }
 
 static void paint(az_draw *d, az_rect a, void *user)
@@ -704,10 +829,22 @@ static void paint(az_draw *d, az_rect a, void *user)
         text_in(d, a, a.x + 112, y + 4, st, 16, r[i].stars ? text : dim);
         text_in(d, a, a.x + 186, y + 4, r[i].bpm, 16, hi);
         text_in(d, a, a.x + 252, y + 4, r[i].key, 16, hi);
+        int right = r[i].has_wave ? a.x + wave_x() - 12 : a.x + a.w - 8;
         snprintf(s, sizeof s, "%s - %s", r[i].title, r[i].artist);
-        text_in(d, a, a.x + 304, y + 2, s, 17, text);
+        text_to(d, a, a.x + 304, y + 2, s, 17, text, right);
         snprintf(s, sizeof s, "%s  |  %s", r[i].genre, r[i].why);
-        text_in(d, a, a.x + 304, y + 24, s, 12, dim);
+        text_to(d, a, a.x + 304, y + 24, s, 12, dim, right);
+        if (r[i].has_wave) {
+            int cur = atomic_load(&scrub_row) == i ? atomic_load(&scrub_pos) : -1;
+            wave_paint(d, a.x + wave_x(), a.y + wave_y(i), &r[i], bg, cur);
+            if (cur >= 0 && r[i].secs > 0) {
+                int at = r[i].secs * cur / 1000;
+                snprintf(s, sizeof s, "%d:%02d / %d:%02d", at / 60, at % 60, r[i].secs / 60, r[i].secs % 60);
+                int w = C->text_width(s, 13);
+                C->fill_rect(d, a.x + wave_x() + WAVE_W - w - 8, a.y + wave_y(i), w + 8, 18, bg);
+                text_in(d, a, a.x + wave_x() + WAVE_W - w - 4, a.y + wave_y(i) - 1, s, 13, text);
+            }
+        }
     }
 }
 
@@ -985,6 +1122,8 @@ static int init(const az_core_v1 *core)
     place();
     if (C->on_deck_event(MOD_ID, on_deck, NULL) != 0)
         return 2;
+    if (AZ_HAS(C, touch_filter))
+        C->touch_filter(MOD_ID, on_touch, NULL);
     if (C->thread_start(MOD_ID, "backspins", worker, NULL) != 0)
         return 3;
     job_t f = { .kind = JOB_FILTERS };
@@ -1005,6 +1144,13 @@ static void tick(void)
         set_visible(0);
     if (atomic_exchange(&regrouped, 0) && visible)
         C->surface_redraw(panel);
+    if (atomic_exchange(&scrub_moved, 0) && visible) {
+        touched_at = t;
+        int row = atomic_load(&scrub_row);
+        if (row >= 0)
+            preview_at(row, atomic_load(&scrub_pos));
+        C->surface_redraw(panel);
+    }
     int h = value(row_hold, 1);
     double hold = HOLD_S[h >= 0 && h < 4 ? h : 1];
     if (expanded && hold > 0 && t - touched_at > hold)
