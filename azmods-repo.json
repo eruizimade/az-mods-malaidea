@@ -3,5 +3,28 @@
   "name": "Mala Idea AZ mods",
   "maintainer": "eruizimade",
   "homepage": "https://github.com/eruizimade/az-mods-malaidea",
-  "mods": []
+  "mods": [
+    {
+      "id": "mala-idea-wallpaper",
+      "name": "Mala Idea Wallpaper",
+      "version": "0.1.0",
+      "author": "eruizimade",
+      "summary": "An idle screen with the Mala Idea logo traced in white ASCII art on black.",
+      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.1.0/mala-idea-wallpaper-0.1.0-icon.png",
+      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.1.0/mala-idea-wallpaper-0.1.0.azmod",
+      "sha256": "c1471934773680a4576a5d92a6ed1f26888b34761789b4101b3dc2337b050171",
+      "size": 1088756,
+      "firmware": [
+        "any"
+      ],
+      "hooks": false,
+      "source": "https://github.com/eruizimade/az-mods-malaidea/tree/main/mala-idea-wallpaper",
+      "updated": "2026-10-17",
+      "category": "visual",
+      "license": "GPL-3.0-only",
+      "min_core": "1.2.3",
+      "description": "When the deck sits untouched and no deck is playing, the Mala Idea logo, its speech bubble and lettering traced in white ASCII art on black, covers the screen.\n\nTouch the screen, turn the browse knob, or load or play a track and the deck comes back. The touch that closes the wallpaper is kept from the deck, so it never presses what was under it. Set the wait (1 to 30 min) or show it now in the Mod Menu.\n\nIt only draws on the screen. It does not patch the deck's code, change any control, LED or audio, write files, or use the network.",
+      "assets_kb": 1001
+    }
+  ]
 }
