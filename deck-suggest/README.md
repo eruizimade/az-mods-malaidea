@@ -1,17 +1,16 @@
 # Deck Suggestions
 
-Load a track on the XDJ-AZ (from a USB stick or from rekordbox over Pro DJ Link) and a panel
-shows the six best tracks to play next, picked by Backspins (the rekordbox toolkit) on your
-computer: the fit (as in Sets), your stars, BPM, key, title, artist and why. Filters on the
-panel (key, BPM range, energy, stars and your MyTag groups) ask again at once. Tracks that play for 45 seconds are reported back,
-so what you play on the deck teaches the suggestions.
+Load a track on the XDJ-AZ and a panel shows the six best tracks to play next, worked out on
+the deck itself with no computer: the fit (as in Backspins' Sets), your stars, BPM, key,
+title, artist, genre, why, the letters to type in the deck's SEARCH, and rekordbox's
+waveform. Filters on the panel (key, BPM range, energy, stars, your MyTag groups and
+genres) recalculate at once. Listening is the deck's own: search the letters, then Touch
+Preview in the browser.
 
-It needs Backspins with Deck link on (`decklink.py`, port 47866) on the same network, and
-`BACKSPINS/deck-link.cfg` on the deck's stick, written by Backspins (`decklink.py
---write-stick`). If the computer's address changed, the mod finds it with a UDP broadcast.
+It reads `BACKSPINS/deck-data.tsv`, which Backspins writes to the drive after an export
+(`deck_export.py`). `deckdata.c` is a C port of Backspins' scoring (affinity.suggest,
+setbuilder.feel_fit and the filters); `tests/parity.py` checks both agree, case for case.
 
-Network: one thread of its own, never the UI thread. It sends what is loaded (title, artist,
-BPM, key, rekordbox id) and what played, to Backspins only. It changes no control, audio or
-library.
+It reads the drive only. No network, no writes, no change to any control, audio or library.
 
 See the [repository README](../README.md) to build, test and publish it.

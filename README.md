@@ -13,7 +13,7 @@ firmware d'AZ-MODS (2.01, core 1.2.3 o més nou).
 | Mod | Què fa |
 |:--|:--|
 | [**Mala Idea Wallpaper**](mala-idea-wallpaper) | Pantalla de repòs: el logo de Mala Idea en ASCII sobre negre |
-| [**Deck Suggestions**](deck-suggest) | Carregues un tema i surten els 5 millors per posar després, triats per Backspins des de l'ordinador |
+| [**Deck Suggestions**](deck-suggest) | Carregues un tema i surten els millors per posar després, calculats al deck amb el que sap Backspins, sense ordinador |
 
 <p align="center"><img src="images/wallpaper.png" width="720" alt="El fons de Mala Idea"></p>
 
@@ -37,55 +37,61 @@ Al **Mod Menu** surt la fila *Mala Idea Wallpaper*: activar-lo o no, **Show afte
 
 ## Deck Suggestions
 
-Quan un deck carrega un tema (d'un USB o de rekordbox per **Pro DJ Link**), el mod pregunta a
-Backspins, a l'ordinador, què hi lliga i mostra un panell amb els 6 millors. Cada fila porta
-el **fit** (la barra de cinc i el número, el mateix que a Sets), les teves **estrelles**, BPM,
-tonalitat, títol, artista, **gènere** i el perquè. L'ordre és el del model que Backspins aprèn dels teus
-sets (què poses després de què).
+Quan un deck carrega un tema, surt un panell amb els **6 millors temes per posar després**,
+calculats **al mateix deck**, sense ordinador: el mateix model que Sets (què poses després de
+què, après dels teus sets), el mateix **fit**, les teves etiquetes, energia, estrelles i
+gèneres. Pensat per tenir tota la música en un **SSD** i per fer **b2b**.
 
 <p align="center"><img src="images/deck-suggest-panel.png" width="720" alt="El panell: filtres a dalt, suggerències a sota"></p>
 
-Els **filtres** es toquen al panell i la llista es torna a demanar a l'instant:
+Cada fila porta el **fit** (la barra de cinc i el número, com a Sets), les **estrelles**, BPM,
+tonalitat, títol, artista, **gènere**, el perquè, les lletres per escriure al **SEARCH** del
+deck i la **forma d'ona** de tres bandes de rekordbox.
+
+Els **filtres** es toquen al panell i la llista es recalcula a l'instant:
 
 - **KEY** strict / open / any · **BPM** ±3 / ±6 / ±10 % / any · **ENERGY** any / up / = / down
   (l'energia del comentari) · **STARS** any / 3+ / 4+ / 5.
-- **Els teus MyTags i el gènere**: el botó del grup (TIMING, MOOD, TYPE, FAMILY, GENRE) canvia de grup i les
-  etiquetes del costat filtren (una per grup, es poden combinar grups). **CLEAR** les treu.
+- **Els teus MyTags i el gènere**: el botó del grup (TIMING, MOOD, TYPE, FAMILY, GENRE) canvia
+  de grup i les etiquetes del costat filtren (una per grup; es poden combinar). **CLEAR** les treu.
 - A dalt a la dreta, quants temes passen els filtres.
 
-A la dreta de cada fila hi ha la **forma d'ona** de tres bandes de rekordbox (la mateixa
-que veus als decks). Hi pots arrossegar el dit: la línia vermella i el temps segueixen el
-dit.
+Té en compte la sessió: el que ja ha sonat (45 s o més) no torna a sortir i dona forma al set,
+i el que sona a l'altre deck tampoc.
 
-> [!IMPORTANT]
-> Encara no sona. Per sentir el tema mentre arrossegues, el mod ha de fer servir el
-> reproductor de preescolta del mateix deck, que l'SDK no ofereix: s'ha de trobar dins el
-> firmware (un mod amb hooks, només per al firmware 2.00). És el pas següent.
+**Per sentir-ne un:** escriu les lletres de **SEARCH** al cercador del deck (p. ex. «FUM»),
+i al navegador de l'AZ hi ha el tema amb la seva forma d'ona: Touch Preview amb el dit
+(LINK CUE) i LOAD, com sempre. El panell no fa so: el so és sempre el del navegador de l'AZ.
 
 Un toc a la capçalera plega el panell en una pestanya **NEXT**; un toc a la pestanya l'obre.
-Es plega sol quan fa estona que no el toques. Quan un tema ha sonat 45 segons, el mod
-l'apunta a Backspins, i el que punxes al deck també ensenya les suggerències. Res d'això
-escriu a rekordbox.
+Es plega sol quan fa estona que no el toques.
 
-Per fer-lo anar:
+**b2b:** engega el deck amb el teu SSD a **USB 1** (AZ-MODS carrega els mods d'aquí). Si el teu
+company carrega un tema del seu disc que no és a la teva biblioteca, el panell ho diu i prou;
+el seu disc no es toca.
 
-1. A Backspins (branca `deck-link` de moment): engega el **Deck link**:
-   `python3 decklink.py --on`. Obre un servidor a part al port **47866**, només per a
-   aquestes dues preguntes i amb una clau; el servidor de l'app continua només a 127.0.0.1.
-2. Connecta a l'ordinador l'USB del deck (el que té la carpeta `MODS`; amb Pro DJ Link
-   n'hi ha prou amb un de petit sense música) i escriu-hi l'enllaç:
-   `python3 decklink.py --write-stick /Volumes/<USB>`. Desa `BACKSPINS/deck-link.cfg`
-   (l'adreça de l'ordinador i la clau).
-3. Deck i ordinador a la mateixa xarxa (la de Pro DJ Link ja hi és). Si l'ordinador canvia
-   d'adreça, el mod la busca sol per la xarxa.
+**Per fer-lo anar:**
+
+1. Exporta a l'SSD des de rekordbox com sempre.
+2. Des de Backspins (branca `deck-link` de moment), escriu-hi les dades del deck:
+   `python3 deck_export.py /Volumes/<SSD>`. Deixa `BACKSPINS/deck-data.tsv` (uns 0,6 KB per tema).
+   Fes-ho després de cada export.
+3. Instal·la el mod a l'SSD. Al **Mod Menu > Deck Suggestions > Status** es veu quants temes
+   ha trobat.
 
 Al **Mod Menu**: *Deck Suggestions* (on/off), **Panel position** (dalt, mig, baix),
-**Keep it open** (10/20/40 s o fins que el toquis), **Link status** (si arriba a Backspins
-i per què no) i **Read link file again**.
+**Keep it open** (10/20/40 s o fins que el toquis), **Status** i **Reload deck data**.
+
+El càlcul del deck és un port en C del de Backspins, i `deck-suggest/tests/parity.py` comprova
+que els dos donen exactament el mateix (temes, ordre, fit i perquè) en centenars de casos:
+
+```sh
+python3 deck-suggest/tests/parity.py ../convertidor-musica-decklink 400
+```
 
 > [!NOTE]
-> Encara no es pot carregar una suggerència des del panell: l'SDK no té cap crida per carregar
-> un tema. De moment el busques al navegador del deck.
+> Una llista **NEXT** al navegador de l'AZ, omplerta pel panell, només es podria actualitzar
+> mentre no sona res de l'SSD (en un b2b, quan punxa l'altre). Ve en una versió següent.
 
 ## Instal·lar-los
 

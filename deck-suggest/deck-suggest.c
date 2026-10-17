@@ -1,52 +1,41 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  *
- * deck-suggest: what to play next, on the deck, from Backspins on your computer.
+ * deck-suggest: what to play next, worked out on the deck from what Backspins knows.
  *
- * When a deck loads a track (from a USB stick or from rekordbox over Pro DJ Link), the mod
- * asks Backspins (the rekordbox toolkit, decklink.py) what fits after it and shows the five
- * best follow-ups in a panel on the deck screen: BPM, key, title, artist and why. When a
- * track has played for 45 seconds it tells Backspins, so what you really play on the deck
- * teaches the suggestions.
- *
- * Where Backspins is: <stick>/BACKSPINS/deck-link.cfg, written by Backspins (host=, port=,
- * key=). If none of its hosts answers, the mod asks the network (UDP broadcast "BACKSPINS?"
- * on the port) and Backspins answers "BACKSPINS <port>".
+ * When a deck loads a track, a panel shows the six best follow-ups: the fit (as Sets shows
+ * it), your stars, BPM, key, title, artist, genre, why, the letters to type in the deck's
+ * SEARCH, and rekordbox's waveform. Filters on the panel (key, tempo, energy, stars, your
+ * MyTags and genres) narrow them at once. No computer during the set: Backspins writes
+ * BACKSPINS/deck-data.tsv to the drive when you export (deck_export.py), and deckdata.c
+ * works out the suggestions here, the same way Backspins does (tests/parity.py).
  *
  * Threads: init(), tick(), the rows, the page and the deck events run on the core's UI
- * thread and never touch the network: they queue jobs. One thread of ours does the network.
- * The answer is handed back under a mutex; on_paint (the overlay thread) copies it under the
- * same mutex.
+ * thread and never touch the disk: they queue jobs. One thread of ours reads the drive and
+ * works out the suggestions; the answer is handed back under a mutex, and on_paint (the
+ * overlay thread) copies it under the same mutex.
  */
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "azmod-mod.h"
+#include "deckdata.h"
 
-#ifndef MSG_NOSIGNAL /* the test harness builds on macOS too */
-#define MSG_NOSIGNAL 0
-#endif
 
 #define MOD_ID "deck-suggest"
 #define ROWS 6
-#define MAX_HOSTS 6
+#define SESSION_GAP_S (45 * 60.0)
 #define PLAYED_AFTER_S 45.0
 #define PANEL_W 1040
 #define ROW_H 42
 #define HEAD_H 40
 #define FILT_H 46
 #define PANEL_H (HEAD_H + 2 * FILT_H + ROWS * ROW_H + 12)
-#define GROUPS 5
+#define GROUPS 6
 #define GTAGS 10
 #define WAVE_COLS 120
 #define WAVE_W (WAVE_COLS * 2)    /* two pixels a column */
@@ -60,7 +49,7 @@ static const az_core_v1 *C;
 
 typedef struct {
     int fit, stars;            /* fit 0..100 (as in Sets), stars 0..5 (your rekordbox rating) */
-    char bpm[8], key[6], title[64], artist[44], genre[32], why[68];
+    char bpm[8], key[6], title[64], artist[44], genre[32], why[72], search[16];
     int secs, has_wave;
     unsigned char wave[WAVE_COLS][3];   /* low, mid, high: 0..15 (rekordbox's 3-band overview) */
 } row_t;
@@ -71,12 +60,14 @@ static char now_title[64];
 static row_t rows[ROWS];
 static int n_rows, n_match = -1;    /* n_match: how many tracks pass the filters */
 static char note[96] = "Load a track";
-/* The MyTag groups Backspins offers to filter by (from /deck/filters). */
+/* The filter groups and their tags, from the deck data (names for the panel, ids for the
+ * filters). */
 static int n_groups;
-static char g_label[GROUPS][12];
-static char g_tag[GROUPS][GTAGS][24];
-static int g_ntags[GROUPS];  /* a status line when there are no rows */
-static char link_state[96] = "not connected yet";
+static char g_label[GROUPS][16];
+static char g_tag[GROUPS][GTAGS][44];
+static int g_tagid[GROUPS][GTAGS];
+static int g_ntags[GROUPS];
+static char data_state[120] = "reading the deck data...";
 static atomic_int fresh;             /* the thread has a new answer for tick to show */
 static atomic_int regrouped;         /* new filter tags arrived: repaint if the panel is up */
 /* The finger, from the touch filter (bus thread) to tick and on_paint: the row being
@@ -85,23 +76,21 @@ static atomic_int scrub_row = -1, scrub_pos, scrub_moved;
 /* The panel as the touch filter needs it (written on the UI thread). */
 static atomic_int geo_x, geo_y, geo_open, geo_rows;
 
-/* ---- jobs for the network thread (guarded by mu) --------------------------------------- */
+/* ---- jobs for our thread (guarded by mu) ------------------------------------------------- */
 
-enum { JOB_SUGGEST = 1, JOB_PLAYED, JOB_FILTERS };
+enum { JOB_SUGGEST = 1, JOB_PLAYED, JOB_LOAD };
 typedef struct {
     int kind, deck;
-    unsigned id;
-    char title[128], artist[128], key[8];
-    double bpm;
-    unsigned other_id;
-    char other_title[128];
-    char filt[320];            /* the deck's filters, as key=value lines (JOB_SUGGEST) */
+    unsigned id;               /* the content id on the drive the deck loaded from */
+    char title[128], artist[128];
+    unsigned other_id;         /* the track playing on another deck */
+    char other_title[128], other_artist[128];
+    dd_filters f;              /* the panel's filters (JOB_SUGGEST) */
 } job_t;
 
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
 static job_t jobs[8];
 static int job_head, job_n;
-static atomic_int reload_cfg = 1;
 
 static void push_job(const job_t *j)
 {
@@ -124,341 +113,208 @@ static void push_job(const job_t *j)
     pthread_cond_signal(&cv);
 }
 
-/* ---- the link: where Backspins is ------------------------------------------------------ */
+/* ---- the deck data, and the drive's own library (our thread only) ------------------------- */
 
-static char cfg_path[400];           /* set in init(): <stick>/BACKSPINS/deck-link.cfg */
-static char hosts[MAX_HOSTS][48];
-static int n_hosts, port = 47866, good_host = -1;
-static char key[64];
-static char found_ip[48];            /* from the broadcast answer */
+static char drive_root[300];         /* set in init(): where the drive is mounted */
+static char data_path[400];          /* <drive>/BACKSPINS/deck-data.tsv */
+static dd_lib *lib;
+typedef struct { unsigned id; int row; } idrow_t;
+static idrow_t *ids;                 /* the drive's content ids -> deck data rows, sorted by id */
+static int n_ids, cap_ids;
+static int session[256], n_session;  /* rows played this session, oldest first */
+static double last_play;
 
-static void set_link(const char *s)
+static void set_state(const char *fmt, ...)
 {
+    char b[120];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
     pthread_mutex_lock(&mu);
-    snprintf(link_state, sizeof link_state, "%s", s);
+    snprintf(data_state, sizeof data_state, "%s", b);
     pthread_mutex_unlock(&mu);
 }
 
-static void read_cfg(void)
+static double now_s(void)
 {
-    n_hosts = 0;
-    key[0] = 0;
-    good_host = -1;
-    found_ip[0] = 0;
-    FILE *f = cfg_path[0] ? fopen(cfg_path, "r") : NULL;
-    if (!f) {
-        set_link("no BACKSPINS/deck-link.cfg on the stick: write it from Backspins");
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* lib_tracks: each track of the drive the deck data was written for, by path */
+static int collect(const az_track *t, void *user)
+{
+    (void)user;
+    size_t rl = strlen(drive_root);
+    if (!t->path || strncmp(t->path, drive_root, rl) || t->path[rl] != '/')
+        return 0;
+    int row = dd_find_path(lib, t->path + rl);
+    if (row < 0)
+        return 0;
+    if (n_ids == cap_ids) {
+        int nc = cap_ids ? cap_ids * 2 : 2048;
+        idrow_t *b = realloc(ids, sizeof(idrow_t) * (size_t)nc);
+        if (!b)
+            return 1;
+        ids = b;
+        cap_ids = nc;
+    }
+    ids[n_ids].id = t->id;
+    ids[n_ids++].row = row;
+    return 0;
+}
+
+static int id_cmp(const void *a, const void *b)
+{
+    unsigned x = ((const idrow_t *)a)->id, y = ((const idrow_t *)b)->id;
+    return x < y ? -1 : x > y;
+}
+
+static void load_data(void)
+{
+    dd_free(lib);
+    lib = NULL;
+    n_ids = 0;
+    n_session = 0;
+    char err[160] = "";
+    if (data_path[0])
+        lib = dd_load(data_path, err, sizeof err);
+    else
+        snprintf(err, sizeof err, "the drive this mod was installed from is not in the deck");
+    if (!lib) {
+        set_state("%s", err);
+        pthread_mutex_lock(&mu);
+        n_groups = 0;
+        pthread_mutex_unlock(&mu);
+        atomic_store(&regrouped, 1);
         return;
     }
-    char line[160];
-    while (fgets(line, sizeof line, f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (!strncmp(line, "host=", 5) && n_hosts < MAX_HOSTS)
-            snprintf(hosts[n_hosts++], sizeof hosts[0], "%s", line + 5);
-        else if (!strncmp(line, "port=", 5))
-            port = atoi(line + 5);
-        else if (!strncmp(line, "key=", 4))
-            snprintf(key, sizeof key, "%s", line + 4);
-    }
-    fclose(f);
-    if (port <= 0 || port > 65535)
-        port = 47866;
-    set_link(key[0] ? "link file read" : "deck-link.cfg has no key: write it again from Backspins");
-}
-
-/* A TCP connection to ip:port within ms milliseconds, or -1. */
-static int dial(const char *ip, int prt, int ms)
-{
-    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((unsigned short)prt) };
-    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1)
-        return -1;
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0)
-        return -1;
-    fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
-    if (connect(s, (struct sockaddr *)&a, sizeof a) < 0 && errno != EINPROGRESS) {
-        close(s);
-        return -1;
-    }
-    struct pollfd p = { .fd = s, .events = POLLOUT };
-    int err = 0;
-    socklen_t el = sizeof err;
-    if (poll(&p, 1, ms) != 1 || getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &el) < 0 || err) {
-        close(s);
-        return -1;
-    }
-    fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) & ~O_NONBLOCK);
-    struct timeval tv = { 3, 0 };
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    return s;
-}
-
-/* Ask the network where Backspins is: UDP broadcast, first answer wins. */
-static int discover(void)
-{
-    int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0)
-        return -1;
-    int on = 1;
-    setsockopt(s, SOL_SOCKET, SO_BROADCAST, &on, sizeof on);
-    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((unsigned short)port),
-                             .sin_addr.s_addr = htonl(INADDR_BROADCAST) };
-    sendto(s, "BACKSPINS?", 10, 0, (struct sockaddr *)&a, sizeof a);
-    struct pollfd p = { .fd = s, .events = POLLIN };
-    int rc = -1;
-    if (poll(&p, 1, 1200) == 1) {
-        char buf[64];
-        struct sockaddr_in from;
-        socklen_t fl = sizeof from;
-        ssize_t n = recvfrom(s, buf, sizeof buf - 1, 0, (struct sockaddr *)&from, &fl);
-        if (n > 10 && !strncmp(buf, "BACKSPINS ", 10)) {
-            buf[n] = 0;
-            int pr = atoi(buf + 10);
-            if (pr > 0 && pr < 65536)
-                port = pr;
-            inet_ntop(AF_INET, &from.sin_addr, found_ip, sizeof found_ip);
-            rc = 0;
+    /* which of the deck's ports holds that drive: the one whose tracks are under its root */
+    if (AZ_HAS(C, lib_tracks))
+        for (int stick = 0; stick < 2 && !n_ids; stick++)
+            C->lib_tracks(MOD_ID, stick, 0, collect, NULL);
+    qsort(ids, (size_t)n_ids, sizeof(idrow_t), id_cmp);
+    pthread_mutex_lock(&mu);
+    n_groups = dd_groups(lib) < GROUPS ? dd_groups(lib) : GROUPS;
+    for (int g = 0; g < n_groups; g++) {
+        snprintf(g_label[g], sizeof g_label[g], "%s", dd_group_label(lib, g));
+        g_ntags[g] = dd_group_ntags(lib, g) < GTAGS ? dd_group_ntags(lib, g) : GTAGS;
+        for (int i = 0; i < g_ntags[g]; i++) {
+            g_tagid[g][i] = dd_group_tag(lib, g, i);
+            snprintf(g_tag[g][i], sizeof g_tag[g][i], "%s", dd_tag_name(lib, g_tagid[g][i]));
         }
     }
-    close(s);
-    return rc;
+    pthread_mutex_unlock(&mu);
+    atomic_store(&regrouped, 1);
+    set_state("%d tracks from Backspins, %d found in this drive's library", dd_count(lib), n_ids);
 }
 
-static int connect_backspins(void)
+/* letters and digits, lower case */
+static void squash(const char *s, char *out, size_t n)
 {
-    if (good_host >= 0) {
-        int s = dial(hosts[good_host], port, 1500);
-        if (s >= 0)
-            return s;
+    size_t k = 0;
+    for (; s && *s && k + 1 < n; s++) {
+        char c = *s;
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z'))
+            out[k++] = c;
+        else if (c >= 'A' && c <= 'Z')
+            out[k++] = (char)(c - 'A' + 'a');
     }
-    if (found_ip[0]) {
-        int s = dial(found_ip, port, 1500);
-        if (s >= 0)
-            return s;
-    }
-    for (int i = 0; i < n_hosts; i++) {
-        int s = dial(hosts[i], port, 1200);
-        if (s >= 0) {
-            good_host = i;
-            return s;
-        }
-    }
-    if (discover() == 0) {
-        int s = dial(found_ip, port, 1500);
-        if (s >= 0)
-            return s;
-    }
-    return -1;
+    out[k] = 0;
 }
 
-/* key=value lines; tabs and newlines in values would break the format, so they go. */
-static void put(char *out, size_t cap, const char *k, const char *v)
+/* The deck data row of what a deck has loaded: by its id on our drive, if the title agrees
+ * (⚠ a track from another drive, a b2b partner's, can carry the same number), else by title
+ * and artist. -1 = not in the deck data. */
+static int row_for(unsigned id, const char *title, const char *artist)
 {
-    size_t len = strlen(out);
-    if (len + strlen(k) + 3 >= cap)
-        return;
-    len += (size_t)snprintf(out + len, cap - len, "%s=", k);
-    for (; *v && len + 2 < cap; v++)
-        out[len++] = (*v == '\n' || *v == '\r' || *v == '\t') ? ' ' : *v;
-    out[len++] = '\n';
-    out[len] = 0;
-}
-
-/* POST path with body; the response body (after the headers) into resp. 0 = 200 OK. */
-static int post(const char *path, const char *body, char *resp, size_t cap)
-{
-    int s = connect_backspins();
-    if (s < 0)
+    if (!lib)
         return -1;
-    char head[256];
-    int hl = snprintf(head, sizeof head,
-                      "POST %s HTTP/1.0\r\nHost: backspins\r\nX-Deck-Key: %s\r\n"
-                      "Content-Type: text/plain\r\nContent-Length: %zu\r\n\r\n",
-                      path, key, strlen(body));
-    int ok = send(s, head, (size_t)hl, MSG_NOSIGNAL) == hl &&
-             send(s, body, strlen(body), MSG_NOSIGNAL) == (ssize_t)strlen(body);
-    size_t got = 0;
-    while (ok && got + 1 < cap) {
-        ssize_t n = recv(s, resp + got, cap - 1 - got, 0);
-        if (n <= 0)
-            break;
-        got += (size_t)n;
+    idrow_t k = { id, 0 }, *hit = id ? bsearch(&k, ids, (size_t)n_ids, sizeof k, id_cmp) : NULL;
+    if (hit) {
+        char a[200], b[200];
+        squash(dd_get(lib, hit->row)->title, a, sizeof a);
+        squash(title, b, sizeof b);
+        if (!b[0] || !strncmp(b, a, strlen(a)))
+            return hit->row;
     }
-    close(s);
-    resp[got] = 0;
-    if (!ok || got < 12)
-        return -2;
-    int code = atoi(resp + 9); /* "HTTP/1.0 200" */
-    char *b = strstr(resp, "\r\n\r\n");
-    if (b)
-        memmove(resp, b + 4, strlen(b + 4) + 1);
-    return code == 200 ? 0 : code;
+    return dd_find_title(lib, title, artist);
 }
 
-static void copy_field(char *dst, size_t cap, const char *src, const char *end)
-{
-    size_t n = (size_t)(end - src);
-    if (n >= cap)
-        n = cap - 1;
-    memcpy(dst, src, n);
-    dst[n] = 0;
-}
-
-/* The answer: "ok 1", "now\ttitle\tartist", then "s\tbpm\tkey\ttitle\tartist\twhy" rows,
- * or "ok 0" and "msg <text>". */
-static void take_answer(int deck, char *body)
+static void show_answer(int deck, int now, const dd_pick *p, int n, int pass)
 {
     row_t got[ROWS];
-    int n = 0, count = -1;
-    char now[64] = "", msg[96] = "";
-    char *save = NULL;
-    for (char *line = strtok_r(body, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        if (!strncmp(line, "now\t", 4)) {
-            char *e = strchr(line + 4, '\t');
-            copy_field(now, sizeof now, line + 4, e ? e : line + strlen(line));
-        } else if (!strncmp(line, "w\t", 2) && n > 0) {
-            /* w  seconds  cols: the waveform of the row just read */
-            row_t *r = &got[n - 1];
-            char *cols = strchr(line + 2, '\t');
-            r->secs = atoi(line + 2);
-            if (cols && strlen(cols + 1) >= WAVE_COLS * 3) {
-                for (int c = 0; c < WAVE_COLS * 3; c++) {
-                    char h = cols[1 + c];
-                    r->wave[c / 3][c % 3] = (unsigned char)(h >= 'a' ? h - 'a' + 10 : h - '0') & 15;
-                }
-                r->has_wave = 1;
-            }
-        } else if (!strncmp(line, "count\t", 6)) {
-            count = atoi(line + 6);
-        } else if (!strncmp(line, "msg ", 4)) {
-            snprintf(msg, sizeof msg, "%s", line + 4);
-        } else if (!strncmp(line, "s\t", 2) && n < ROWS) {
-            /* s  fit  stars  bpm  key  title  artist  genre  why */
-            char *f[8] = { 0 };
-            char *p = line + 2;
-            for (int i = 0; i < 8 && p; i++) {
-                f[i] = p;
-                p = strchr(p, '\t');
-                if (p)
-                    *p++ = 0;
-            }
-            if (!f[7])
-                continue;
-            row_t *r = &got[n++];
-            memset(r, 0, sizeof *r);
-            r->fit = atoi(f[0]);
-            r->stars = atoi(f[1]);
-            snprintf(r->bpm, sizeof r->bpm, "%s", f[2]);
-            snprintf(r->key, sizeof r->key, "%s", f[3]);
-            snprintf(r->title, sizeof r->title, "%s", f[4]);
-            snprintf(r->artist, sizeof r->artist, "%s", f[5]);
-            snprintf(r->genre, sizeof r->genre, "%s", f[6]);
-            snprintf(r->why, sizeof r->why, "%s", f[7]);
-        }
+    memset(got, 0, sizeof got);
+    for (int i = 0; i < n && i < ROWS; i++) {
+        const dd_row *t = dd_get(lib, p[i].row);
+        row_t *r = &got[i];
+        r->fit = p[i].fit;
+        r->stars = t->stars;
+        if (t->bpm)
+            snprintf(r->bpm, sizeof r->bpm, "%.1f", t->bpm);
+        else
+            snprintf(r->bpm, sizeof r->bpm, "-");
+        snprintf(r->key, sizeof r->key, "%s", t->key);
+        snprintf(r->title, sizeof r->title, "%s", t->title);
+        snprintf(r->artist, sizeof r->artist, "%s", t->artist);
+        snprintf(r->genre, sizeof r->genre, "%s", t->genre);
+        snprintf(r->why, sizeof r->why, "%s", p[i].why);
+        snprintf(r->search, sizeof r->search, "%s", t->search);
+        r->secs = t->secs;
+        r->has_wave = t->has_wave;
+        memcpy(r->wave, t->wave, sizeof r->wave);
     }
     pthread_mutex_lock(&mu);
     shown_deck = deck;
-    snprintf(now_title, sizeof now_title, "%s", now);
+    snprintf(now_title, sizeof now_title, "%s", dd_get(lib, now)->title);
     memcpy(rows, got, sizeof got);
     n_rows = n;
-    n_match = count;
+    n_match = pass;
+    snprintf(note, sizeof note, "%s", n ? "" : "nothing passes these filters");
+    pthread_mutex_unlock(&mu);
     atomic_store(&geo_rows, n);
-    snprintf(note, sizeof note, "%s", n ? "" : (msg[0] ? msg : "nothing fits yet"));
-    pthread_mutex_unlock(&mu);
     atomic_store(&fresh, 1);
-}
-
-/* "g\t<label>\t<bank>\t<tag>..." lines: the groups and tags the deck can filter by. */
-static void take_filters(char *body)
-{
-    int n = 0;
-    char lab[GROUPS][12], tag[GROUPS][GTAGS][24];
-    int nt[GROUPS];
-    char *save = NULL;
-    for (char *line = strtok_r(body, "\n", &save); line && n < GROUPS; line = strtok_r(NULL, "\n", &save)) {
-        if (strncmp(line, "g\t", 2))
-            continue;
-        char *f[2 + GTAGS + 1] = { 0 };
-        int k = 0;
-        char *p = line + 2;
-        while (p && k < 2 + GTAGS) {
-            f[k++] = p;
-            p = strchr(p, '\t');
-            if (p)
-                *p++ = 0;
-        }
-        if (k < 3)
-            continue;
-        snprintf(lab[n], sizeof lab[n], "%s", f[0]);
-        nt[n] = 0;
-        for (int i = 2; i < k; i++)
-            snprintf(tag[n][nt[n]++], sizeof tag[0][0], "%s", f[i]);
-        n++;
-    }
-    pthread_mutex_lock(&mu);
-    n_groups = n;
-    memcpy(g_label, lab, sizeof lab);
-    memcpy(g_tag, tag, sizeof tag);
-    memcpy(g_ntags, nt, sizeof nt);
-    pthread_mutex_unlock(&mu);
-    atomic_store(&regrouped, 1);
 }
 
 static void run_job(const job_t *j)
 {
-    char body[1024] = "", resp[4096];
-    char num[32];
-    if (j->kind == JOB_FILTERS) {
-        if (post("/deck/filters", "", resp, sizeof resp) == 0)
-            take_filters(resp);
+    if (j->kind == JOB_LOAD) {
+        load_data();
         return;
     }
-    snprintf(num, sizeof num, "%d", j->deck);
-    put(body, sizeof body, "deck", num);
-    if (j->id) {
-        snprintf(num, sizeof num, "%u", j->id);
-        put(body, sizeof body, "id", num);
-    }
-    put(body, sizeof body, "title", j->title);
-    put(body, sizeof body, "artist", j->artist);
-    put(body, sizeof body, "key", j->key);
-    snprintf(num, sizeof num, "%.2f", j->bpm);
-    put(body, sizeof body, "bpm", num);
-    if (j->kind == JOB_SUGGEST) {
-        if (j->other_id) {
-            snprintf(num, sizeof num, "%u", j->other_id);
-            put(body, sizeof body, "other_id", num);
+    int now = row_for(j->id, j->title, j->artist);
+    if (j->kind == JOB_PLAYED) {
+        if (now < 0)
+            return;
+        double t = now_s();
+        if (n_session && t - last_play > SESSION_GAP_S)
+            n_session = 0; /* a new session */
+        last_play = t;
+        if (n_session == (int)(sizeof session / sizeof session[0])) {
+            memmove(session, session + 1, sizeof session - sizeof session[0]);
+            n_session--;
         }
-        if (j->other_title[0])
-            put(body, sizeof body, "other_title", j->other_title);
-        if (strlen(body) + strlen(j->filt) < sizeof body)
-            strcat(body, j->filt);
+        session[n_session++] = now;
+        return;
     }
-    int rc = post(j->kind == JOB_SUGGEST ? "/deck/suggest" : "/deck/played", body, resp, sizeof resp);
-    char st[96];
-    if (rc == 0) {
-        snprintf(st, sizeof st, "connected to %s:%d", good_host >= 0 ? hosts[good_host] : found_ip, port);
-        set_link(st);
-        if (j->kind == JOB_SUGGEST)
-            take_answer(j->deck, resp);
-    } else {
-        if (rc == -1)
-            snprintf(st, sizeof st, "Backspins not found on the network (is Deck link on?)");
-        else if (rc == 403)
-            snprintf(st, sizeof st, "Backspins refused the key: write the stick again");
-        else
-            snprintf(st, sizeof st, "Backspins answered %d", rc);
-        set_link(st);
-        if (j->kind == JOB_SUGGEST) {
-            pthread_mutex_lock(&mu);
-            shown_deck = j->deck;
-            n_rows = 0;
-            snprintf(note, sizeof note, "%s", st);
-            pthread_mutex_unlock(&mu);
-            atomic_store(&fresh, 1);
-        }
+    if (now < 0) {
+        pthread_mutex_lock(&mu);
+        shown_deck = j->deck;
+        n_rows = 0;
+        n_match = -1;
+        snprintf(note, sizeof note, "%s", lib ? "this track is not in Backspins' deck data" : data_state);
+        pthread_mutex_unlock(&mu);
+        atomic_store(&geo_rows, 0);
+        atomic_store(&fresh, 1);
+        return;
     }
+    int other = j->other_title[0] ? row_for(j->other_id, j->other_title, j->other_artist) : -1;
+    dd_pick p[ROWS];
+    int pass = 0;
+    int n = dd_suggest(lib, session, n_session, now, other, &j->f, p, ROWS, &pass);
+    show_answer(j->deck, now, p, n, pass);
 }
 
 static void *worker(void *arg)
@@ -473,20 +329,7 @@ static void *worker(void *arg)
         job_head = (job_head + 1) % 8;
         job_n--;
         pthread_mutex_unlock(&mu);
-        if (atomic_exchange(&reload_cfg, 0))
-            read_cfg();
-        if (key[0]) {
-            pthread_mutex_lock(&mu);
-            int need_groups = n_groups == 0;
-            pthread_mutex_unlock(&mu);
-            if (need_groups && j.kind == JOB_SUGGEST) {
-                job_t f = { .kind = JOB_FILTERS };
-                run_job(&f);
-            }
-            run_job(&j);
-        }
-        else
-            set_link("no link file on the stick: write it from Backspins");
+        run_job(&j);
     }
     return NULL;
 }
@@ -505,36 +348,32 @@ static double touched_at;            /* the last time the panel opened or was to
 /* The filters (guarded by mu: the UI thread changes them, on_paint reads them). */
 static const char *const KEY_MODES[] = { "strict", "open", "any" };
 static const char *const BPM_MODES[] = { "3", "6", "10", "any" };
-static const char *const ENERGY_MODES[] = { "any", "up", "same", "down" };
 static const int STAR_MODES[] = { 0, 3, 4, 5 };
 static int f_key = 1, f_bpm = 1, f_energy, f_stars, f_group;
-static char f_tag[GROUPS][24];       /* the chosen tag per group, "" = none */
+static char f_tag[GROUPS][44];       /* the chosen tag per group, "" = none */
 static job_t last_job;               /* the last load, asked again when a filter changes */
 static int have_last;
-
-static double now_s(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
-}
 
 static int value(int row, int def)
 {
     return row < 0 ? def : C->row_value(row);
 }
 
-/* key=value lines for /deck/suggest; mu must be held. */
-static void filters_body(char *out, size_t cap)
+/* The panel's filters as deckdata wants them; mu must be held. */
+static void fill_filters(dd_filters *f)
 {
-    char tags[200] = "";
-    for (int g = 0; g < n_groups; g++)
-        if (f_tag[g][0]) {
-            size_t l = strlen(tags);
-            snprintf(tags + l, sizeof tags - l, "%s%s:%s", l ? "|" : "", g_label[g], f_tag[g]);
-        }
-    snprintf(out, cap, "key=%s\nbpm=%s\nenergy=%s\nstars=%d\ntags=%s\n", KEY_MODES[f_key],
-             BPM_MODES[f_bpm], ENERGY_MODES[f_energy], STAR_MODES[f_stars], tags);
+    static const double BPM_PCT[] = { 3, 6, 10, -1 };
+    memset(f, 0, sizeof *f);
+    f->key_mode = f_key;
+    f->bpm_pct = BPM_PCT[f_bpm];
+    f->energy = f_energy;
+    f->stars = STAR_MODES[f_stars];
+    for (int g = 0; g < n_groups && f->ntags < 8; g++)
+        for (int i = 0; f_tag[g][0] && i < g_ntags[g]; i++)
+            if (!strcmp(f_tag[g], g_tag[g][i])) {
+                f->tags[f->ntags++] = g_tagid[g][i];
+                break;
+            }
 }
 
 static void save_filters(void)
@@ -832,8 +671,15 @@ static void paint(az_draw *d, az_rect a, void *user)
         int right = r[i].has_wave ? a.x + wave_x() - 12 : a.x + a.w - 8;
         snprintf(s, sizeof s, "%s - %s", r[i].title, r[i].artist);
         text_to(d, a, a.x + 304, y + 2, s, 17, text, right);
+        /* the letters to type in the deck's SEARCH, then genre and why */
+        int sx = a.x + 304;
+        if (r[i].search[0]) {
+            snprintf(s, sizeof s, "SEARCH %s", r[i].search);
+            text_to(d, a, sx, y + 24, s, 12, hi, right);
+            sx += C->text_width(s, 12) + 12;
+        }
         snprintf(s, sizeof s, "%s  |  %s", r[i].genre, r[i].why);
-        text_to(d, a, a.x + 304, y + 24, s, 12, dim, right);
+        text_to(d, a, sx, y + 24, s, 12, dim, right);
         if (r[i].has_wave) {
             int cur = atomic_load(&scrub_row) == i ? atomic_load(&scrub_pos) : -1;
             wave_paint(d, a.x + wave_x(), a.y + wave_y(i), &r[i], bg, cur);
@@ -855,8 +701,7 @@ static void ask_again(void)
         return;
     job_t j = last_job;
     pthread_mutex_lock(&mu);
-    filters_body(j.filt, sizeof j.filt);
-    snprintf(note, sizeof note, "asking Backspins...");
+    fill_filters(&j.f);
     pthread_mutex_unlock(&mu);
     push_job(&j);
 }
@@ -928,10 +773,8 @@ static void fill_job(job_t *j, int kind, int deck, const az_deck_info *di)
     j->kind = kind;
     j->deck = deck;
     j->id = di->content_id;
-    j->bpm = di->bpm;
     snprintf(j->title, sizeof j->title, "%s", di->title);
     snprintf(j->artist, sizeof j->artist, "%s", di->artist);
-    snprintf(j->key, sizeof j->key, "%s", di->key);
 }
 
 static void on_deck(int deck, int what, void *user)
@@ -950,11 +793,12 @@ static void on_deck(int deck, int what, void *user)
         if (o != deck && C->deck_info(o, &od) == 0 && od.loaded && od.playing == 1) {
             j.other_id = od.content_id;
             snprintf(j.other_title, sizeof j.other_title, "%s", od.title);
+            snprintf(j.other_artist, sizeof j.other_artist, "%s", od.artist);
             break;
         }
     }
     pthread_mutex_lock(&mu);
-    filters_body(j.filt, sizeof j.filt);
+    fill_filters(&j.f);
     pthread_mutex_unlock(&mu);
     last_job = j;
     have_last = 1;
@@ -964,12 +808,13 @@ static void on_deck(int deck, int what, void *user)
     n_rows = 0;
     n_match = -1;
     snprintf(now_title, sizeof now_title, "%s", di.title);
-    snprintf(note, sizeof note, "asking Backspins...");
+    snprintf(note, sizeof note, "working it out...");
     pthread_mutex_unlock(&mu);
     atomic_store(&fresh, 1);
 }
 
-/* Once a second: count how long each deck's track has played; at 45 s, report the play. */
+/* Once a second: count how long each deck's track has played; at 45 s it counts as played
+ * this session (no repeats, and the set so far shapes the suggestions). */
 static void watch_plays(double dt_s)
 {
     for (int i = 0; i < 4; i++) {
@@ -1010,30 +855,30 @@ static void on_pos(int v, void *user)
     place();
 }
 
-static void reconnect(void *user)
+static void reload(void *user)
 {
     (void)user;
-    atomic_store(&reload_cfg, 1);
-    set_link("will read the link file again on the next load");
+    job_t j = { .kind = JOB_LOAD };
+    push_job(&j);
 }
 
 static void page_draw(az_draw *d, az_rect a, void *user)
 {
     (void)user;
-    char st[96], cp[400];
+    char st[120], cp[400];
     pthread_mutex_lock(&mu);
-    snprintf(st, sizeof st, "%s", link_state);
+    snprintf(st, sizeof st, "%s", data_state);
     pthread_mutex_unlock(&mu);
-    snprintf(cp, sizeof cp, "%s", cfg_path[0] ? cfg_path : "(no stick)");
+    snprintf(cp, sizeof cp, "%s", data_path[0] ? data_path : "(the drive is not in the deck)");
     int lh = C->row_height(d);
     C->draw_header(d, "Deck Suggestions");
-    text_in(d, a, a.x + 24, a.y + lh + 20, "Link to Backspins:", 20, C->color(AZ_COL_TEXT_DIM));
+    text_in(d, a, a.x + 24, a.y + lh + 20, "Deck data:", 20, C->color(AZ_COL_TEXT_DIM));
     text_in(d, a, a.x + 24, a.y + lh + 52, st, 20, C->color(AZ_COL_TEXT));
-    text_in(d, a, a.x + 24, a.y + lh + 100, "Link file:", 20, C->color(AZ_COL_TEXT_DIM));
+    text_in(d, a, a.x + 24, a.y + lh + 100, "File:", 20, C->color(AZ_COL_TEXT_DIM));
     text_in(d, a, a.x + 24, a.y + lh + 132, cp, 16, C->color(AZ_COL_TEXT));
     text_in(d, a, a.x + 24, a.y + lh + 190,
-                 "In Backspins: switch Deck link on, plug this stick in, write the link file.", 16,
-                 C->color(AZ_COL_TEXT_DIM));
+            "After each export from rekordbox, run Backspins' deck export to this drive.", 16,
+            C->color(AZ_COL_TEXT_DIM));
 }
 
 static int page_input(const az_event *ev, void *user)
@@ -1053,8 +898,8 @@ static void register_ui(void)
     static const az_row_v1 on = {
         .size = sizeof(az_row_v1), .key = "on", .label = "Deck Suggestions",
         .kind = AZ_ROW_TOGGLE, .flags = AZ_ROW_DEFAULT_ON,
-        .help = "When a deck loads a track, Backspins on your computer suggests the five best "
-                "tracks to play next. It needs Deck link on in Backspins and the same network.",
+        .help = "When a deck loads a track, the six best tracks to play next, worked out on "
+                "the deck from what Backspins wrote to this drive. No computer needed.",
         .on_change = on_toggle,
     };
     static const az_row_v1 pos = {
@@ -1069,14 +914,14 @@ static void register_ui(void)
         .choices = HOLDS, .n_choices = 4, .default_choice = 1,
     };
     static const az_row_v1 status = {
-        .size = sizeof(az_row_v1), .key = "status", .label = "Link status", .kind = AZ_ROW_SCREEN,
-        .parent = "on", .help = "Whether the deck reaches Backspins, and where the link file is.",
+        .size = sizeof(az_row_v1), .key = "status", .label = "Status", .kind = AZ_ROW_SCREEN,
+        .parent = "on", .help = "Whether Backspins' deck data was found on the drive, and how much.",
     };
     static const az_row_v1 again = {
-        .size = sizeof(az_row_v1), .key = "reload", .label = "Read link file again",
+        .size = sizeof(az_row_v1), .key = "reload", .label = "Reload deck data",
         .kind = AZ_ROW_ACTION, .parent = "on",
-        .help = "After writing the stick again from Backspins (a new address or key).",
-        .on_activate = reconnect,
+        .help = "Read BACKSPINS/deck-data.tsv again (it is read when the deck starts).",
+        .on_activate = reload,
     };
     row_on = C->register_row(MOD_ID, &on);
     row_pos = C->register_row(MOD_ID, &pos);
@@ -1103,7 +948,8 @@ static int init(const az_core_v1 *core)
         char *m = strstr(root, "/MODS/");
         if (m) {
             *m = 0;
-            snprintf(cfg_path, sizeof cfg_path, "%s/BACKSPINS/deck-link.cfg", root);
+            snprintf(drive_root, sizeof drive_root, "%s", root);
+            snprintf(data_path, sizeof data_path, "%s/BACKSPINS/deck-data.tsv", root);
         }
     }
     register_ui();
@@ -1124,10 +970,10 @@ static int init(const az_core_v1 *core)
         return 2;
     if (AZ_HAS(C, touch_filter))
         C->touch_filter(MOD_ID, on_touch, NULL);
-    if (C->thread_start(MOD_ID, "backspins", worker, NULL) != 0)
+    if (C->thread_start(MOD_ID, "deck-suggest", worker, NULL) != 0)
         return 3;
-    job_t f = { .kind = JOB_FILTERS };
-    push_job(&f);
+    job_t l = { .kind = JOB_LOAD };
+    push_job(&l);
     return 0;
 }
 

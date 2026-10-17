@@ -31,7 +31,7 @@
 # otherwise exported, which the deck refuses. A C-only build is unchanged by any of this.
 
 MOD_ID          := deck-suggest
-SRCS            := deck-suggest.c
+SRCS            := deck-suggest.c deckdata.c
 AZ_SDK_INCLUDE  ?= ../include
 AZ_SDK          ?= ..
 MAX_REDRAWS     ?= 4          # the most repaints a second your tick asks for
@@ -50,7 +50,7 @@ CFLAGS  := -O2 -Wall -Wextra -Werror=implicit-function-declaration \
            -fexceptions -fasynchronous-unwind-tables \
            -I$(AZ_SDK_INCLUDE)
 LDFLAGS := -shared -static-libgcc -Wl,--no-undefined -Wl,--hash-style=gnu
-LDLIBS  := -lpthread # add -lpthread if you start a thread, -lm for math functions
+LDLIBS  := -lpthread -lm # add -lpthread if you start a thread, -lm for math functions
 
 # GCC 10+ on aarch64 defaults to outline atomics (a libgcc helper). The SDK's GCC 7
 # does not know the flag; probe for it so the same Makefile works on both.
