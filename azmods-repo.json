@@ -28,24 +28,24 @@
     {
       "id": "mala-idea-wallpaper",
       "name": "Mala Idea Wallpaper",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": "eruizimade",
-      "summary": "An idle screen with the Mala Idea logo traced in white ASCII art on black.",
-      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.1.0/mala-idea-wallpaper-0.1.0-icon.png",
-      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.1.0/mala-idea-wallpaper-0.1.0.azmod",
-      "sha256": "c1471934773680a4576a5d92a6ed1f26888b34761789b4101b3dc2337b050171",
-      "size": 1088756,
+      "summary": "The Mala Idea logo in animated orange ASCII on black, at power-on and when the deck sits idle.",
+      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.0/mala-idea-wallpaper-0.2.0-icon.png",
+      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.0/mala-idea-wallpaper-0.2.0.azmod",
+      "sha256": "08266f7bb121fd8b8ca298ae813ec307a24aa7605049162a2c6b3a48a0ee210f",
+      "size": 99848,
       "firmware": [
         "any"
       ],
       "hooks": false,
       "source": "https://github.com/eruizimade/az-mods-malaidea/tree/main/mala-idea-wallpaper",
-      "updated": "2026-10-17",
+      "updated": "2026-10-18",
       "category": "visual",
       "license": "GPL-3.0-only",
       "min_core": "1.2.3",
-      "description": "When the deck sits untouched and no deck is playing, the Mala Idea logo, its speech bubble and lettering traced in white ASCII art on black, covers the screen.\n\nTouch the screen, turn the browse knob, or load or play a track and the deck comes back. The touch that closes the wallpaper is kept from the deck, so it never presses what was under it. Set the wait (1 to 30 min) or show it now in the Mod Menu.\n\nIt only draws on the screen. It does not patch the deck's code, change any control, LED or audio, write files, or use the network.",
-      "assets_kb": 1001
+      "description": "At power-on, and when the deck sits untouched with no deck playing, the Mala Idea logo covers the screen in AZ-MODS orange: the speech bubble's outline in line characters, its inside a slow wave of characters, the letters dense and swept by a band of light, loose grey characters drifting outside.\n\nPress SHIFT twice (either side) to get the deck back; touches while it is up never reach the deck, and a finger held 3 seconds also closes it. In the Mod Menu: switch it off, turn off the power-on screen, set the wait (1 to 30 min) or show it now.\n\nIt only draws on the screen. It does not patch the deck's code, change any control, LED or audio, write files, or use the network.",
+      "assets_kb": 30
     }
   ]
 }
