@@ -6,3 +6,4 @@
 *.so binary
 *.exe binary
 *.azmod binary
+*.mic binary

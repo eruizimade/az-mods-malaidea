@@ -5,13 +5,11 @@
     python3 tools/make_wallpaper.py
 
 Writes:
-    images/wallpaper.png                          the full-colour preview
-    mala-idea-wallpaper/assets/wallpaper.miw      what the mod loads on the deck
+    images/wallpaper.png                          a still of the logo traced in ASCII
+    mala-idea-wallpaper/assets/corrent.mic        what the mod animates on the deck (write_corrent)
 
-wallpaper.miw is deliberately simple so the mod needs no image library:
-    "MIW1"  u16 width  u16 height  (little endian)
-    256 x RGB palette (768 bytes)
-    width*height palette indices, row by row
+The animation itself is drawn by the mod, frame by frame; preview/fons-animat.html shows the
+same thing in a browser.
 """
 import math
 import os
@@ -309,6 +307,96 @@ def ascii_logo(cols, font, cw, lh, color=(255, 255, 255)):
     return res, out
 
 
+# ---- Corrent: the animated wallpaper -----------------------------------------------------
+
+CELL_W, CELL_H = 6, 12                       # one character on the deck: 6x12 px
+RAMP = " .:-=+*"                             # the bubble's inside, by the wave's height
+DENSE = "@#%&8$"                             # the letters
+DRIFT = "!#$%&*+-:;=?@[]<>/\\|^~01MALIDE"    # the loose characters outside the bubble
+EDGES = "|/\\-_"
+
+
+def corrent_grid():
+    """The logo as screen cells (213 x 66 of 6x12 px): 0 outside, 1 inside the bubble, 2 its
+    outline (with the line character that follows it), 3 the letters."""
+    src = Image.open(LOGO).convert("L")
+    a = np.asarray(src, np.float32) / 255
+    ys, xs = np.where(a > 0.5)
+    m = 12
+    a = a[ys.min() - m:ys.max() + m, xs.min() - m:xs.max() + m]
+    # a copy: an image made straight from an array can share its memory, and the flood fill
+    # then leaves the outside unmarked
+    filled = Image.fromarray((a > 0.5).astype(np.uint8) * 255).copy()
+    ImageDraw.floodfill(filled, (0, 0), 128)
+    filled = filled.point(lambda v: 0 if v == 128 else 255)
+    fill = np.asarray(filled, np.float32) / 255
+    inner = np.asarray(filled.filter(ImageFilter.MinFilter(9)), np.float32) / 255
+    text = (fill > 0.5) & (inner > 0.5) & (a < 0.5)
+    edge = (fill > 0.5) & ~(np.asarray(filled.filter(ImageFilter.MinFilter(3))) > 128)
+    soft = np.asarray(filled.filter(ImageFilter.GaussianBlur(6)), np.float32)
+    gy, gx = np.gradient(soft)
+
+    gc, gr = W // CELL_W, H // CELL_H
+    h, w = a.shape
+    cols = 196
+    rows = int(round(cols * (h / w) * (CELL_W / CELL_H)))
+    sx, sy = w / cols, h / rows
+    ox, oy = (gc - cols) // 2, (gr - rows) // 2
+    kind = np.zeros((gr, gc), np.uint8)
+    edge_ch = np.full((gr, gc), " ")
+    for r in range(rows):
+        for c in range(cols):
+            y0, y1 = int(r * sy), int((r + 1) * sy)
+            x0, x1 = int(c * sx), int((c + 1) * sx)
+            e = edge[y0:y1, x0:x1]
+            if text[y0:y1, x0:x1].mean() > 0.12:
+                kind[r + oy, c + ox] = 3
+            elif e.mean() > 0.05:
+                ey, ex = np.where(e)
+                ny = gy[y0:y1, x0:x1][ey, ex].mean()
+                nx = gx[y0:y1, x0:x1][ey, ex].mean()
+                ang = (math.degrees(math.atan2(ny, nx)) + 180) % 180
+                if ang < 22.5 or ang >= 157.5:
+                    ch = "|"
+                elif ang < 67.5:
+                    ch = "/"
+                elif ang < 112.5:
+                    ch = "-" if ny < 0 else "_"
+                else:
+                    ch = "\\"
+                kind[r + oy, c + ox] = 2
+                edge_ch[r + oy, c + ox] = ch
+            elif fill[y0:y1, x0:x1].mean() > 0.5:
+                kind[r + oy, c + ox] = 1
+    return kind, edge_ch
+
+
+def write_corrent(path):
+    """assets/corrent.mic, everything the mod needs to draw Corrent with no font of its own:
+        "MIC1"  u16 cols  u16 rows  u8 cell_w  u8 cell_h  u8 n_glyphs
+        n_glyphs characters (ASCII), then each one's coverage, cell_w*cell_h bytes (0..255)
+        cols*rows cell kinds (0 outside, 1 bubble, 2 outline, 3 letter)
+        cols*rows outline characters (a glyph index, 255 for none)"""
+    kind, edge_ch = corrent_grid()
+    chars = "".join(sorted(set(RAMP + DENSE + DRIFT + EDGES) - {" "}))
+    font = ImageFont.truetype(MONO, 10, index=1)  # Menlo Bold, as in the preview
+    cover = b""
+    for ch in chars:
+        im = Image.new("L", (CELL_W, CELL_H), 0)
+        ImageDraw.Draw(im).text((0, 0), ch, font=font, fill=255)
+        cover += im.tobytes()
+    gr, gc = kind.shape
+    idx = np.full((gr, gc), 255, np.uint8)
+    for r in range(gr):
+        for c in range(gc):
+            if edge_ch[r, c] != " ":
+                idx[r, c] = chars.index(edge_ch[r, c])
+    with open(path, "wb") as f:
+        f.write(b"MIC1" + struct.pack("<HHBBB", gc, gr, CELL_W, CELL_H, len(chars)))
+        f.write(chars.encode("ascii") + cover + kind.tobytes() + idx.tobytes())
+    return chars
+
+
 def make():
     """Black, with the logo traced into white ASCII in the middle. Nothing else."""
     base = Image.new("RGBA", (W, H), (0, 0, 0, 255))
@@ -345,25 +433,14 @@ def make_suggest_icon():
     return icon
 
 
-def write_miw(img, path):
-    q = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
-    pal = (q.getpalette() or [])[: 256 * 3]
-    pal += [0] * (256 * 3 - len(pal))
-    with open(path, "wb") as f:
-        f.write(b"MIW1" + struct.pack("<HH", img.width, img.height))
-        f.write(bytes(pal))
-        f.write(q.tobytes())
-    return q
-
 
 if __name__ == "__main__":
     random.seed(1)
     img = make()
     os.makedirs(os.path.join(ROOT, "images"), exist_ok=True)
     img.save(os.path.join(ROOT, "images", "wallpaper.png"), optimize=True)
-    q = write_miw(img, os.path.join(ROOT, "mala-idea-wallpaper", "assets", "wallpaper.miw"))
-    q.convert("RGB").save(os.path.join(ROOT, "images", "wallpaper-on-deck.png"), optimize=True)
+    write_corrent(os.path.join(ROOT, "mala-idea-wallpaper", "assets", "corrent.mic"))
     make_icon().save(os.path.join(ROOT, "mala-idea-wallpaper", "icon.png"))
     make_suggest_icon().save(os.path.join(ROOT, "deck-suggest", "icon.png"))
     print("\n".join(ascii_logo(196, ImageFont.truetype(MONO, 10, index=1), 6, 12)[1]))
-    print("wrote images/wallpaper.png and mala-idea-wallpaper/assets/wallpaper.miw")
+    print("wrote images/wallpaper.png and mala-idea-wallpaper/assets/corrent.mic")

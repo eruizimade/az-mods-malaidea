@@ -34,7 +34,7 @@ MOD_ID          := mala-idea-wallpaper
 SRCS            := mala-idea-wallpaper.c
 AZ_SDK_INCLUDE  ?= ../include
 AZ_SDK          ?= ..
-MAX_REDRAWS     ?= 4          # the most repaints a second your tick asks for
+MAX_REDRAWS     ?= 12         # the most repaints a second your tick asks for (FPS)
 SAN             ?= plain asan tsan
 TEST_CC         ?= clang
 TEST_CXX        ?= clang++
@@ -50,7 +50,7 @@ CFLAGS  := -O2 -Wall -Wextra -Werror=implicit-function-declaration \
            -fexceptions -fasynchronous-unwind-tables \
            -I$(AZ_SDK_INCLUDE)
 LDFLAGS := -shared -static-libgcc -Wl,--no-undefined -Wl,--hash-style=gnu
-LDLIBS  :=        # add -lpthread if you start a thread, -lm for math functions
+LDLIBS  := -lm     # sinf, fmodf; add -lpthread if you start a thread
 
 # GCC 10+ on aarch64 defaults to outline atomics (a libgcc helper). The SDK's GCC 7
 # does not know the flag; probe for it so the same Makefile works on both.
