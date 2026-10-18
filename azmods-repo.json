@@ -28,13 +28,13 @@
     {
       "id": "mala-idea-wallpaper",
       "name": "Mala Idea Wallpaper",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": "eruizimade",
       "summary": "The Mala Idea logo in animated orange ASCII on black, at power-on and when the deck sits idle.",
-      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.0/mala-idea-wallpaper-0.2.0-icon.png",
-      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.0/mala-idea-wallpaper-0.2.0.azmod",
-      "sha256": "08266f7bb121fd8b8ca298ae813ec307a24aa7605049162a2c6b3a48a0ee210f",
-      "size": 99848,
+      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.1/mala-idea-wallpaper-0.2.1-icon.png",
+      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/mala-idea-wallpaper-0.2.1/mala-idea-wallpaper-0.2.1.azmod",
+      "sha256": "6482b3521f4d2bcc282f862bf006bdac6f5ba4bd1455574c030e12a5f50d8184",
+      "size": 99928,
       "firmware": [
         "any"
       ],
