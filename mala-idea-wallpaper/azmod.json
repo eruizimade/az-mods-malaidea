@@ -2,7 +2,7 @@
   "azmod": 1,
   "id": "mala-idea-wallpaper",
   "name": "Mala Idea Wallpaper",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "eruizimade",
   "summary": "The Mala Idea logo in animated orange ASCII on black, at power-on and when the deck sits idle.",
   "description": "At power-on, and when the deck sits untouched with no deck playing, the Mala Idea logo covers the screen in AZ-MODS orange: the speech bubble's outline in line characters, its inside a slow wave of characters, the letters dense and swept by a band of light, loose grey characters drifting outside.\n\nPress SHIFT twice (either side) to get the deck back; touches while it is up never reach the deck, and a finger held 3 seconds also closes it. In the Mod Menu: switch it off, turn off the power-on screen, set the wait (1 to 30 min) or show it now.\n\nIt only draws on the screen. It does not patch the deck's code, change any control, LED or audio, write files, or use the network.",

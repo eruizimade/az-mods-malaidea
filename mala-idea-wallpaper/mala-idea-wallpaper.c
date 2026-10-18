@@ -38,6 +38,9 @@
 #define FPS 12              /* frames a second while it is up (MAX_REDRAWS in the Makefile) */
 #define SHIFT_GAP 0.6       /* the most seconds between the two SHIFT presses */
 #define HOLD_TO_CLOSE 3.0   /* a finger held this long on the screen also closes it */
+#define SETTLE 1.5          /* SHIFT is not looked at for this long after it comes up */
+#define BOOT_WAIT 3.0       /* at power-on: this long after the deck's own screen is up */
+#define BOOT_GIVE_UP 45.0   /* ...or this long after the mod loaded, whatever the screen */
 
 /* The look, as in the preview: AZ-MODS orange and its grey, on black. */
 #define ORANGE_R 255
@@ -69,6 +72,7 @@ static const int DELAY_S[] = { 60, 120, 300, 600, 1800 };
 
 static int shown;
 static int boot_pending;
+static double ui_up_at;       /* when view() first reported a real screen */
 static double started, shown_at, last_activity, last_frame;
 static atomic_int activity;   /* set by the filters: something was touched or turned */
 static atomic_int close_req;  /* set by the filters: SHIFT twice, or a long hold */
@@ -77,7 +81,7 @@ static atomic_int finger_down;
 static _Atomic double finger_since;
 static unsigned char mixer_prev[4];
 static int mixer_seen;
-static int shift_prev[2];
+static int shift_prev[2], erp_seen;
 static double shift_last;     /* the ERP filter's own: one bus, one thread */
 
 static double now_s(void)
@@ -262,10 +266,11 @@ static int surface_input(const az_event *ev, void *user)
     return 1;
 }
 
-static void show(int on)
+static void show(int on, const char *why)
 {
     if (!wall || shown == on)
         return;
+    C->log(MOD_ID, "%s: %s (view %d)", on ? "shown" : "closed", why, AZ_HAS(C, view) ? C->view() : -1);
     shown = on;
     atomic_store(&wall_up, on);
     atomic_store(&close_req, 0);
@@ -301,6 +306,12 @@ static int on_erp(int bus, unsigned char *frame, int len, void *user)
     (void)user;
     if (len < 0x12)
         return AZ_FRAME_OK;
+    if (!erp_seen) { /* the first frame sets the state: a button already down is no press */
+        shift_prev[0] = (frame[0x09] & 0x80) != 0;
+        shift_prev[1] = (frame[0x11] & 0x80) != 0;
+        erp_seen = 1;
+        return AZ_FRAME_OK;
+    }
     for (int side = 0; side < 2; side++) {
         int down = (frame[side ? 0x11 : 0x09] & 0x80) != 0;
         if (down && !shift_prev[side]) {
@@ -372,14 +383,14 @@ static void show_now(void *user)
 {
     (void)user;
     last_activity = now_s();
-    show(1);
+    show(1, "Show now");
 }
 
 static void on_toggle(int value, void *user)
 {
     (void)user;
     if (!value)
-        show(0);
+        show(0, "switched off");
     last_activity = now_s();
 }
 
@@ -468,9 +479,10 @@ static void tick(void)
     int act = atomic_exchange(&activity, 0);
     if (shown) {
         int held = atomic_load(&finger_down) && t - atomic_load(&finger_since) >= HOLD_TO_CLOSE;
-        if (atomic_exchange(&close_req, 0) || held || !enabled()) {
+        int shift2 = atomic_exchange(&close_req, 0) && t - shown_at >= SETTLE;
+        if (shift2 || held || !enabled()) {
             last_activity = t;
-            show(0);
+            show(0, shift2 ? "SHIFT twice" : held ? "finger held" : "switched off");
             return;
         }
         if (t - last_frame >= 1.0 / FPS) {
@@ -484,13 +496,21 @@ static void tick(void)
         last_activity = t;
     if (!frame_px || !enabled())
         return;
-    /* at power-on, once the deck's own screen is up */
-    if (boot_pending && t - started >= 0.5) {
+    /* At power-on, once the deck's own screen has been up a moment: shown any earlier, it
+     * went up while EP147 was still starting and never reached the screen. */
+    if (boot_pending) {
+        int v = AZ_HAS(C, view) ? C->view() : AZ_VIEW_OTHER;
+        if (v != AZ_VIEW_OTHER && ui_up_at == 0)
+            ui_up_at = t;
+        int ready = (ui_up_at > 0 && t - ui_up_at >= BOOT_WAIT) || t - started >= BOOT_GIVE_UP;
+        if (!ready)
+            return;
         boot_pending = 0;
         if (row_boot < 0 || C->row_value(row_boot) == 1) {
-            show(1);
+            show(1, "power-on");
             return;
         }
+        C->log(MOD_ID, "power-on screen is off in the Mod Menu");
     }
     static double last_check;
     if (t - last_check < 1.0) /* the decks are looked at once a second, not every tick */
@@ -501,7 +521,7 @@ static void tick(void)
         return;
     }
     if (t - last_activity >= delay_s())
-        show(1);
+        show(1, "idle");
 }
 
 static const char *const TAGS[] = { "any", NULL };
