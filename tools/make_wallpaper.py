@@ -417,21 +417,6 @@ def make_icon():
     return icon.convert("RGB")
 
 
-def make_suggest_icon():
-    """256x256 icon for Deck Suggestions: a NEXT list in white ASCII on black."""
-    n = 256
-    icon = Image.new("RGB", (n, n), (0, 0, 0))
-    d = ImageDraw.Draw(icon)
-    big = ImageFont.truetype(MONO, 40, index=1)
-    small = ImageFont.truetype(MONO, 19, index=1)
-    d.text((22, 24), ">> NEXT", font=big, fill=(255, 255, 255))
-    d.line([(22, 80), (234, 80)], fill=(255, 255, 255), width=3)
-    for i, (bpm, key) in enumerate((("124", "8A"), ("125", "9A"), ("126", "8B"), ("123", "7A"))):
-        y = 96 + i * 36
-        d.text((22, y), "%s %s" % (bpm, key), font=small, fill=(255, 255, 255))
-        d.text((118, y), "#" * (8 - i) + "-" * i, font=small, fill=(150, 150, 150))
-    return icon
-
 
 
 if __name__ == "__main__":
@@ -441,6 +426,5 @@ if __name__ == "__main__":
     img.save(os.path.join(ROOT, "images", "wallpaper.png"), optimize=True)
     write_corrent(os.path.join(ROOT, "mala-idea-wallpaper", "assets", "corrent.mic"))
     make_icon().save(os.path.join(ROOT, "mala-idea-wallpaper", "icon.png"))
-    make_suggest_icon().save(os.path.join(ROOT, "deck-suggest", "icon.png"))
     print("\n".join(ascii_logo(196, ImageFont.truetype(MONO, 10, index=1), 6, 12)[1]))
     print("wrote images/wallpaper.png and mala-idea-wallpaper/assets/corrent.mic")

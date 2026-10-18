@@ -5,27 +5,6 @@
   "homepage": "https://github.com/eruizimade/az-mods-malaidea",
   "mods": [
     {
-      "id": "deck-suggest",
-      "name": "Deck Suggestions",
-      "version": "0.2.4",
-      "author": "eruizimade",
-      "summary": "What to play next, worked out on the deck: fit, stars, key, tempo, energy and MyTag filters. No computer.",
-      "icon": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.4/deck-suggest-0.2.4-icon.png",
-      "package": "https://github.com/eruizimade/az-mods-malaidea/releases/download/deck-suggest-0.2.4/deck-suggest-0.2.4.azmod",
-      "sha256": "0f971c7ae2e7b1c95c6139820967bf30bb5841c36ae963b804ccc563dc912fad",
-      "size": 103353,
-      "firmware": [
-        "any"
-      ],
-      "hooks": false,
-      "source": "https://github.com/eruizimade/az-mods-malaidea/tree/main/deck-suggest",
-      "updated": "2026-10-17",
-      "category": "tools",
-      "license": "GPL-3.0-only",
-      "min_core": "1.2.3",
-      "description": "Load a track and a panel shows the six best follow-ups with fit, stars, BPM, key, genre, why, rekordbox's waveform and the letters to type in SEARCH, worked out on the deck from what Backspins (the rekordbox toolkit) wrote to your drive. Tap filters (key, BPM, energy, stars, MyTags, genre) to narrow them.\n\nNeeds BACKSPINS/deck-data.tsv on the drive (Backspins' deck export). Reads the drive only: no network, no writes, no change to controls, audio or library."
-    },
-    {
       "id": "mala-idea-wallpaper",
       "name": "Mala Idea Wallpaper",
       "version": "0.2.1",
